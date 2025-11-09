@@ -1,6 +1,6 @@
 #include "decoder.h"
 
-Decoder::Decoder(std::ifstream* is, Predictor* p) : is_(is), x1_(0),
+Decoder::Decoder(std::ifstream* is, IPredictor* p) : is_(is), x1_(0),
     x2_(0xffffffff), x_(0), p_(p) {
   for (int i = 0; i < 4; ++i) {
     x_ = (x_ << 8) + (ReadByte() & 0xff);

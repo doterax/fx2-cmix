@@ -3,20 +3,20 @@
 
 #include <fstream>
 
-#include "../predictor.h"
+#include "../IPredictor.h"
 
 class Decoder {
- public:
-  Decoder(std::ifstream* is, Predictor* p);
+public:
+  Decoder(std::ifstream *is, IPredictor *p);
   int Decode();
 
- private:
-  int ReadByte();
-  unsigned int Discretize(float p);
+private:
+  int            ReadByte();
+  unsigned int   Discretize(float p);
 
-  std::ifstream* is_;
-  unsigned int x1_, x2_, x_;
-  Predictor* p_;
+  std::ifstream *is_;
+  unsigned int   x1_, x2_, x_;
+  IPredictor    *p_;
 };
 
 #endif

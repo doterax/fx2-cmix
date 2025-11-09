@@ -15,7 +15,7 @@ bool IsAscii(int byte) {
   return false;
 }
 
-void Pretrain(Predictor* p, FILE* dictionary) {
+void Pretrain(IPredictor* p, FILE* dictionary) {
   if (dictionary == NULL) return;
   fseek(dictionary, 0L, SEEK_END);
   unsigned int len = ftell(dictionary);
