@@ -4,7 +4,6 @@
 
 #include "ppmd.h"
 #include <cstring>
-#include <stdlib.h>
 #include <cstdio>
 
 namespace PPMD {

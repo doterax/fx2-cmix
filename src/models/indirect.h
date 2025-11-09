@@ -6,7 +6,7 @@
 
 #include <vector>
 #include <array>
-#include <stdlib.h>
+#include "..\random.hpp"
 
 template<typename StateType>
 class Indirect : public Model {
@@ -37,7 +37,7 @@ Indirect<StateType>::Indirect(const StateType& state,
     std::vector<unsigned char>& map) :  byte_context_(byte_context),
     bit_context_(bit_context), map_index_(0), map_offset_(0),
     divisor_(1.0 / delta), state_(state), map_(map) {
-  map_offset_ = rand() % (map_.size() - 257);
+  map_offset_ = get_random() % (map_.size() - 257);
   for (int i = 0; i < 256; ++i) {
     predictions_[i] = state_.InitProbability(i);
   }

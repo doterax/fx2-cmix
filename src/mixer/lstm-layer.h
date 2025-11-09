@@ -3,7 +3,6 @@
 
 #include <valarray>
 #include <vector>
-#include <stdlib.h>
 #include <math.h>
 
 struct NeuronLayer {
@@ -34,9 +33,6 @@ class LstmLayer {
       std::valarray<float>* hidden, int hidden_start);
   void BackwardPass(const std::valarray<float>& input, int epoch,
       int layer, int input_symbol, std::valarray<float>* hidden_error);
-  static inline float Rand() {
-    return static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
-  }
   std::vector<std::valarray<std::valarray<float>>*> Weights();
 
  private:

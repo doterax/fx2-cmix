@@ -18,8 +18,8 @@
 
 #include <algorithm>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include "random.hpp"
 
 namespace {
 const int kMinVocabFileSize = 10000;
@@ -348,7 +348,8 @@ int main(int argc, char **argv) {
         argv[1][1] != 's' && argv[1][1] != 'n' && argv[1][1] != 'e'))) {
     return Help();
   }
-  srand(SEED);
+
+  set_seed(0);
 
   clock_t     start             = clock();
 

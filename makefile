@@ -2,7 +2,7 @@ CC = c++
 
 ROOT_DIR:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CFLAGS_DEFINES) -g -O0 -DUPDATE_LIMIT=3000 -DSEED=923 -m64 -Wall -std=c++17 -fno-exceptions -fno-threadsafe-statics -Wunknown-pragmas -Wno-unused-variable -fno-exceptions -fno-threadsafe-statics -Wno-unused-but-set-variable -Wno-format 
+CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CFLAGS_DEFINES) -g -O0 -DUPDATE_LIMIT=3000 -m64 -Wall -std=c++17 -fno-exceptions -fno-threadsafe-statics -Wunknown-pragmas -Wno-unused-variable -fno-exceptions -fno-threadsafe-statics -Wno-unused-but-set-variable -Wno-format 
 
 ifdef COREI7
 $(info COREI7 defined)
@@ -130,15 +130,18 @@ $(OUT_DIR)/sse.o: src/mixer/sse.cpp src/mixer/sse.h | $(OUT_DIR)
 $(OUT_DIR)/predictor.o: src/predictor.cpp src/predictor.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/predictor.cpp -o $(OUT_DIR)/predictor.o
 
+$(OUT_DIR)/random.o: src/random.cpp | $(OUT_DIR)
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/random.cpp -o $(OUT_DIR)/random.o
+
 $(OUT_DIR)/runner.o: src/runner.cpp | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/runner.cpp -o $(OUT_DIR)/runner.o
 
 slow: $(OUT_DIR)/preprocessor.o $(OUT_DIR)/dictionary.o
 
-fast: $(OUT_DIR)/decoder.o $(OUT_DIR)/encoder.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/bit-context.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/sparse.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/indirect.o $(OUT_DIR)/match.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/run-map.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sse.o $(OUT_DIR)/predictor.o $(OUT_DIR)/runner.o
+fast: $(OUT_DIR)/decoder.o $(OUT_DIR)/encoder.o $(OUT_DIR)/random.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/bit-context.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/sparse.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/indirect.o $(OUT_DIR)/match.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/run-map.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sse.o $(OUT_DIR)/predictor.o $(OUT_DIR)/runner.o
 
 cmix: fast slow
-	$(CC) $(LFLAGS) $(OUT_DIR)/bit-context.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/decoder.o $(OUT_DIR)/dictionary.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/encoder.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/indirect.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/match.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/predictor.o $(OUT_DIR)/preprocessor.o $(OUT_DIR)/run-map.o $(OUT_DIR)/runner.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sparse.o $(OUT_DIR)/sse.o -o cmix
+	$(CC) $(LFLAGS) $(OUT_DIR)/bit-context.o $(OUT_DIR)/random.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/decoder.o $(OUT_DIR)/dictionary.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/encoder.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/indirect.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/match.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/predictor.o $(OUT_DIR)/preprocessor.o $(OUT_DIR)/run-map.o $(OUT_DIR)/runner.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sparse.o $(OUT_DIR)/sse.o -o cmix
 
 remap: src/readalike_prepr/article_remap.cpp
 	$(CC) src/readalike_prepr/article_remap.cpp -o remap

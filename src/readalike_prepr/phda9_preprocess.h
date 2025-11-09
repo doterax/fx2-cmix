@@ -2,7 +2,6 @@
 #define PREPR_H 
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <assert.h>
 
 typedef unsigned char  U8;

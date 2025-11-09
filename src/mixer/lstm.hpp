@@ -1,7 +1,6 @@
 #include "lstm.h"
 
 #include <numeric>
-#include <stdlib.h>
 #include <fstream>
 #include <iostream>
 

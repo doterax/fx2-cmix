@@ -1,7 +1,8 @@
 {
     "files.associations": {
         "optional": "cpp",
-        "valarray": "cpp"
+        "valarray": "cpp",
+        "random": "cpp"
     },
     "C_Cpp.clang_format_fallbackStyle": 
         "{ BasedOnStyle: LLVM, IndentWidth: 2, ColumnLimit: 80, AllowShortIfStatementsOnASingleLine: false, AlignConsecutiveAssignments: AcrossEmptyLines, AlignConsecutiveBitFields: AcrossEmptyLines, AlignConsecutiveDeclarations: AcrossEmptyLines, AlignConsecutiveMacros: AcrossEmptyLines, AllowAllParametersOfDeclarationOnNextLine : true, AllowShortFunctionsOnASingleLine: Inline, AlwaysBreakBeforeMultilineStrings: true }"

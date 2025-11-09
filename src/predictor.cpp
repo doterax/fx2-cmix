@@ -1,7 +1,6 @@
 #include "predictor.h"
 #include <cstdlib>
 #include <stdio.h>
-#include <stdlib.h>
 #include <vector>
 
 Predictor::Predictor(const std::vector<bool> &vocab)

@@ -5,6 +5,7 @@
 #include <math.h>
 #include <algorithm>
 #include <numeric>
+#include "..\random.hpp"
 
 #define FAST_TANH tanh //fast_tanh
 #define FAST_TANH_VEC tanh //fast_tanh_vec
@@ -78,9 +79,9 @@ inline LstmLayer::LstmLayer(unsigned int input_size, unsigned int auxiliary_inpu
   float range = 2 * val;
   for (unsigned int i = 0; i < num_cells_; ++i) {
     for (unsigned int j = 0; j < forget_gate_.weights_[i].size(); ++j) {
-      forget_gate_.weights_[i][j] = low + Rand() * range;
-      input_node_.weights_[i][j] = low + Rand() * range;
-      output_gate_.weights_[i][j] = low + Rand() * range;
+      forget_gate_.weights_[i][j] = low + get_uniform_random() * range;
+      input_node_.weights_[i][j] = low + get_uniform_random() * range;
+      output_gate_.weights_[i][j] = low + get_uniform_random() * range;
     }
     forget_gate_.weights_[i][forget_gate_.weights_[i].size() - 1] = 1;
   }

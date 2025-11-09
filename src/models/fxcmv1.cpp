@@ -20,7 +20,6 @@
 #include "fxcmv1.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
@@ -113,7 +112,6 @@ void ResetPredictions() {
 #ifdef UNIX  // not tested
 #include <stdio.h>
 #include <sys/types.h>
-#include <stdlib.h>
 #include <memory.h>
 #include <cstdio>
 #include <ctype.h>

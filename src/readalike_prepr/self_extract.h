@@ -1,7 +1,6 @@
 #ifndef SELF_EXTRACT_H 
 #define SELF_EXTRACT_H 
 
-#include <stdlib.h>
 #include <malloc.h>
 
 #include <string>
