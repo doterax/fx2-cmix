@@ -6,3 +6,9 @@ progress.log
 run/
 changes.v2
 logs
+
+prof_input/enwik8
+
+cmix.exe
+
+res.bin

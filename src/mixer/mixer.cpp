@@ -5,7 +5,7 @@
 #include <numeric>
 #include <utility>
 #include <math.h>
-#include <sys/resource.h>
+// #include <sys/resource.h>
 Mixer::Mixer(const std::valarray<float>& inputs,
     const std::valarray<float>& extra_inputs,
     const unsigned long long& context, float learning_rate,

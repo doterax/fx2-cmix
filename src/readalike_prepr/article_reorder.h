@@ -48,7 +48,7 @@ std::vector<std::string> lines;
 int wfgets(char *str, int count, FILE  *fp);
 void wfputs(const char *str,FILE *fp);
 
-void loadFile(const char *fname) {
+void loadFile(const char * fname) {
    
     line_count = 0;
     int  state = expect_page;

@@ -78,7 +78,6 @@ int selfextract_comp() {
 //  std::cout << "Decompressing dictionary..." << std::endl;
   system("./cmix -d .dict.comp .dict");
   free(p1);
-  malloc_trim(0);
   return 0;
 }
 
@@ -122,7 +121,6 @@ int selfextract_decomp() {
   fclose(fo);
 
   free(p1);
-  malloc_trim(0);
   return 0;
 }
 
