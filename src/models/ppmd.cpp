@@ -731,7 +731,7 @@ PPM_CONTEXT* UpdateModel( PPM_CONTEXT* MinContext ) {
   byte Flag, FSymbol;
   uint ns1, ns, cf, sf, s0, FFreq;
   uint iSuccessor, iFSuccessor;
-  PPM_CONTEXT* pc;
+  PPM_CONTEXT* pc = NULL;
   STATE* p = NULL;
 
   FSymbol = FoundState->Symbol;

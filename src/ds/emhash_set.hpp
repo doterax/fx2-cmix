@@ -54,7 +54,7 @@
 
 #if _WIN32
 #include <intrin.h>
-#if _WIN64
+#if _WIN64 && defined(_MSC_VER)
 #pragma intrinsic(_umul128)
 #endif
 #endif

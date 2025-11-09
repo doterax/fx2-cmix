@@ -779,9 +779,9 @@ void encode_txt_wit(FILE* in, FILE* out) {
   }
   while (!feof(in));
   // output tail to main file and report tail size as info
-  U64 msize=curpos(out);
-  int tsize=curpos(out1);
-  int headersize=curpos(out3);
+  auto msize=curpos(out);
+  auto tsize=curpos(out1);
+  auto headersize=curpos(out3);
    setpos(out1,0);
    setpos(out3,0);
    sprintf(o, "%d%c", headersize, 10);

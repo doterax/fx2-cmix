@@ -2218,12 +2218,15 @@ inline int charSwap(int c){
  This is mostly from paq8px with some modifications.
 */
 #define MAX_WORD_SIZE 64
-class Word {
-public:
+struct Word {
   U8 Letters[MAX_WORD_SIZE];
   U8 Start, End;
   U32 Hash, Type, Suffix, Preffix;;
   Word(): Start(0), End(0), Hash(0), Type(0), Suffix(0), Preffix(0) {
+    memset(&Letters[0], 0, sizeof(U8)*MAX_WORD_SIZE);
+  }
+  void Clear(){
+    Start=End=Hash=Type=Suffix=Preffix=0;
     memset(&Letters[0], 0, sizeof(U8)*MAX_WORD_SIZE);
   }
   bool operator==(const char *s) const{
@@ -3658,7 +3661,7 @@ void setbufstem(char c){
         StemIndex=(StemIndex+1)&3;
         pWord=cWord;
         cWord=&StemWords[StemIndex];
-        memset(cWord, 0, sizeof(Word));
+        cWord->Clear();
         
         if ((*pWord).Type& Verb) sVerb=(*pWord).Hash;
       
@@ -4342,7 +4345,7 @@ int modelPrediction(int c0,int bpos,int c4){
             }
             if (colcxt.lastfc()=='*') {
                 // List
-                cmC[0].set(word0+( ( fccontext) << 8)  | ((BrFcIdx ) << 16));// or not add!
+                cmC[0].set((word0 + (fccontext << 8)) | ((BrFcIdx) << 16)); // or not add!
                 cmC[0].set(c1);
                 cmC[0].set(word0);
             } else {

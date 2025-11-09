@@ -32,8 +32,9 @@ int line_count = 0;
 static char s[8192*8];
 
 void bubblesort(std::vector<Accumulator>& mylist) {
-    for (int i = 1; i < mylist.size(); i++)	{
-        for (int j = 0; j < mylist.size() - i; j++) {
+  auto size = mylist.size();
+    for (std::size_t i = 1; i < size; i++)	{
+        for (std::size_t j = 0; j < size - i; j++) {
             if (mylist[j].id > mylist[j + 1].id) {
             std::swap(mylist[j], mylist[j + 1]);
             }
@@ -142,7 +143,7 @@ void reorder() {
 			  
   FILE* out = fopen(".main_reordered", "wb");
   std::string so;
-  for(int i = 0; i < positions.size(); i++) {
+  for(std::size_t i = 0; i < positions.size(); i++) {
     int pos = positions[i];
      #ifdef DUMPARTICLE
      printf("%d\t%d\t%d\t%d\t%s\t%s\t%s\n",pos,vec[pos].id,vec[pos].start,vec[pos].end,vec[pos].title.c_str(),vec[pos].infobox.c_str(),vec[pos].redirect.c_str());
@@ -170,8 +171,8 @@ void sort() {
 	  
   FILE* out = fopen(".main_decomp_restored_sorted", "wb");
   std::string so;
-  for(int i =0; i < vec.size(); i++) {
-    for(int j = vec[i].start; j <= vec[i].end; j++) {
+  for(std::size_t i =0; i < vec.size(); i++) {
+    for(auto j = vec[i].start; j <= vec[i].end; j++) {
       so=lines[j];
       wfputs(so.c_str(),out);
     }
