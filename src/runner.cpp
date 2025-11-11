@@ -345,7 +345,7 @@ bool RunDecompression(const std::string &input_path,
 }
 
 int main(int argc, char **argv) {
-  unsigned int seed = 0;  // Default seed
+  unsigned int seed = 27;  // Default seed
   int arg_offset = 1;
   
   // Check for -s<seed> flag
