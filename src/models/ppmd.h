@@ -2,8 +2,6 @@
 #define PPMD_H
 
 #include "byte-model.h"
-
-#include <memory>
 #include <Eigen/Core>
 
 namespace PPMD {
@@ -11,18 +9,18 @@ namespace PPMD {
 struct ppmd_Model;
 
 class PPMD : public ByteModel {
- public:
-  PPMD(int order, int memory, const unsigned int& bit_context,
-      const std::vector<bool>& vocab);
+public:
+  PPMD(int order, int memory, const unsigned int &bit_context,
+       const std::vector<bool> &vocab);
   ~PPMD();
   void ByteUpdate();
- private:
-  const unsigned int& byte_;
+
+private:
+  const unsigned int         &byte_;
   std::unique_ptr<ppmd_Model> ppmd_model_;
-  Eigen::VectorXi byte_map_;
+  Eigen::VectorXi             byte_map_;
 };
 
 } // namespace PPMD
 
 #endif
-
