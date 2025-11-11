@@ -2,7 +2,7 @@ CC = c++
 
 ROOT_DIR:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CFLAGS_DEFINES) -g -O0 -DUPDATE_LIMIT=3000 -m64 -Wall -std=c++17 -fno-exceptions -fno-threadsafe-statics -Wunknown-pragmas -Wno-unused-variable -fno-exceptions -fno-threadsafe-statics -Wno-unused-but-set-variable -Wno-format 
+CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CFLAGS_DEFINES) -g -O0 -DUPDATE_LIMIT=3000 -m64 -Wall -std=c++17 -fno-exceptions -fno-threadsafe-statics -Wunknown-pragmas -Wno-unused-variable -fno-exceptions -fno-threadsafe-statics -Wno-unused-but-set-variable -Wno-format -Ithird_party/Eigen 
 
 ifdef COREI7
 $(info COREI7 defined)
