@@ -40,6 +40,9 @@ int Help() {
   printf("Decompress:\n");
   printf("    with dictionary:    cmix -d [dictionary] [input] [output]\n");
   printf("    without dictionary: cmix -d [input] [output]\n");
+  printf("Options:\n");
+  printf("    -s<seed>: Random seed for initialization (default: 0, range: 0-65535)\n");
+  printf("              Example: cmix -s42 -c input.txt output.bin\n");
   return -1;
 }
 
@@ -342,14 +345,27 @@ bool RunDecompression(const std::string &input_path,
 }
 
 int main(int argc, char **argv) {
-  if ((argc != 1) && (argv[1][1] != 'h') &&
-      (argc < 4 || argc > 5 || strlen(argv[1]) != 2 || argv[1][0] != '-' ||
-       (argv[1][1] != 'c' && argv[1][1] != 'd' && argv[1][1] != 'x' &&
-        argv[1][1] != 's' && argv[1][1] != 'n' && argv[1][1] != 'e'))) {
+  unsigned int seed = 0;  // Default seed
+  int arg_offset = 1;
+  
+  // Check for -s<seed> flag
+  if (argc > 1 && argv[1][0] == '-' && argv[1][1] == 's' && strlen(argv[1]) > 2) {
+    seed = atoi(&argv[1][2]);
+    if (seed > 65535) seed = 65535;  // Cap at 16-bit max
+    arg_offset = 2;  // Skip the -s<seed> argument
+  }
+  
+  if ((argc != 1) && (argc - arg_offset + 1 >= 1) && (argv[arg_offset][1] != 'h') &&
+      (argc - arg_offset + 1 < 4 || argc - arg_offset + 1 > 5 || 
+       strlen(argv[arg_offset]) != 2 || argv[arg_offset][0] != '-' ||
+       (argv[arg_offset][1] != 'c' && argv[arg_offset][1] != 'd' && 
+        argv[arg_offset][1] != 'x' && argv[arg_offset][1] != 's' && 
+        argv[arg_offset][1] != 'n' && argv[arg_offset][1] != 'e'))) {
     return Help();
   }
 
-  set_seed(0);
+  set_seed(seed);
+  printf("Using random seed: %u\n", seed);
 
   clock_t     start             = clock();
 
@@ -358,19 +374,19 @@ int main(int argc, char **argv) {
   std::string output_path;
   FILE       *dictionary = NULL;
 
-  if ((argc > 1) && (argv[1][1] != 'h')) {
-    if (argv[1][1] == 'n')
+  if ((argc > arg_offset) && (argv[arg_offset][1] != 'h')) {
+    if (argv[arg_offset][1] == 'n')
       enable_preprocess = false;
-    input_path  = argv[2];
-    output_path = argv[3];
-    if (argc == 5) {
-      if (argv[1][1] == 'n')
+    input_path  = argv[arg_offset + 1];
+    output_path = argv[arg_offset + 2];
+    if (argc == arg_offset + 4) {
+      if (argv[arg_offset][1] == 'n')
         return Help();
-      dictionary = fopen(argv[2], "rb");
+      dictionary = fopen(argv[arg_offset + 1], "rb");
       if (!dictionary)
         return Help();
-      input_path  = argv[3];
-      output_path = argv[4];
+      input_path  = argv[arg_offset + 2];
+      output_path = argv[arg_offset + 3];
     }
   }
 
@@ -411,21 +427,21 @@ int main(int argc, char **argv) {
     goto print_end_message;
   }
 
-  if (argv[1][1] == 's') {
+  if (argv[arg_offset][1] == 's') {
     if (!Store(input_path, temp_path, output_path, dictionary, &input_bytes,
                &output_bytes)) {
       return Help();
     }
-  } else if (argv[1][1] == 'c' || argv[1][1] == 'n') {
+  } else if (argv[arg_offset][1] == 'c' || argv[arg_offset][1] == 'n') {
     remove(".dict");
     if (!RunCompression(enable_preprocess, input_path, temp_path, output_path,
                         dictionary, &input_bytes, &output_bytes)) {
       return Help();
     }
-  } else if (argv[1][1] == 'e') {
+  } else if (argv[arg_offset][1] == 'e') {
     // Compress enwik9
-    input_path  = argv[2];
-    output_path = argv[3]; // name of a compressor output
+    input_path  = argv[arg_offset + 1];
+    output_path = argv[arg_offset + 2]; // name of a compressor output
 
     // unpack a) cmix dictionary, b) new order of articles, c) actual cmix
     // binary
@@ -473,19 +489,19 @@ int main(int argc, char **argv) {
     int  i        = strtol(mode, 0, 8);
     chmod(buf, i);
 
-  } else if (argv[1][1] == 'h') {
-    if (argc < 5)
+  } else if (argv[arg_offset][1] == 'h') {
+    if (argc < arg_offset + 4)
       return Help();
     HeaderInfo header;
-    header.dict_size              = atoi(argv[2]);
-    header.new_article_order_size = atoi(argv[3]);
-    header.decomp_input_size      = atoi(argv[4]);
+    header.dict_size              = atoi(argv[arg_offset + 1]);
+    header.new_article_order_size = atoi(argv[arg_offset + 2]);
+    header.decomp_input_size      = atoi(argv[arg_offset + 3]);
     write("header.dat", header);
     return 0;
-  } else if (argv[1][1] == 'x') {
+  } else if (argv[arg_offset][1] == 'x') {
     // run compression
-    input_path  = argv[2];
-    output_path = argv[3];
+    input_path  = argv[arg_offset + 1];
+    output_path = argv[arg_offset + 2];
     dictionary  = fopen(".dict", "rb");
     if (!RunDecompression(input_path, temp_path, output_path, dictionary,
                           &input_bytes, &output_bytes)) {
