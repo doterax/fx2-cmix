@@ -2,7 +2,7 @@ CC = c++
 
 ROOT_DIR:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CFLAGS_DEFINES) -g -O0 -DUPDATE_LIMIT=3000 -m64 -Wall -std=c++17 -fno-exceptions -fno-threadsafe-statics -Wunknown-pragmas -Wno-unused-variable -fno-exceptions -fno-threadsafe-statics -Wno-unused-but-set-variable -Wno-format -Ithird_party 
+CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CFLAGS_DEFINES) -DUPDATE_LIMIT=3000 -m64 -Wall -std=c++17 -fno-exceptions -fno-threadsafe-statics -Wunknown-pragmas -Wno-unused-variable -fno-exceptions -fno-threadsafe-statics -Wno-unused-but-set-variable -Wno-format -Ithird_party -DEIGEN_NO_DEBUG -DNDEBUG
 
 ifdef COREI7
 $(info COREI7 defined)
@@ -19,10 +19,8 @@ endif
 
 CPPFLAGS_PART-THAT-CAN-BE-SLOW    := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
 CPPFLAGS_PART-THAT-CAN-BE-SLOW    += -Os -fdata-sections -ffunction-sections
-CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -fdata-sections -ffunction-sections -ggdb
-
-
-LFLAGS := -m64 -Wl,--gc-sections -std=c++17 -g
+CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -ffast-math -fdata-sections -ffunction-sections
+LFLAGS := -m64 -Wl,--gc-sections -std=c++17
 
 OUT_DIR := out
 

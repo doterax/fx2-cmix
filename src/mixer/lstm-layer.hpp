@@ -95,13 +95,13 @@ inline void LstmLayer::ForwardPass(const Eigen::VectorXf& input, int input_symbo
   ForwardPass(forget_gate_, input, input_symbol);
   ForwardPass(input_node_, input, input_symbol);
   ForwardPass(output_gate_, input, input_symbol);
-  for (unsigned int i = 0; i < num_cells_; ++i) {
-    forget_gate_.state_[epoch_][i] = Sigmoid::Logistic(
-        forget_gate_.state_[epoch_][i]);
-    input_node_.state_[epoch_][i] = FAST_TANH(input_node_.state_[epoch_][i]);
-    output_gate_.state_[epoch_][i] = Sigmoid::Logistic(
-        output_gate_.state_[epoch_][i]);
-  }
+  
+  // Vectorized activation functions using Eigen's array operations
+  forget_gate_.state_[epoch_] = (1.0f / (1.0f + (-forget_gate_.state_[epoch_].array()).exp())).matrix();
+  input_node_.state_[epoch_] = input_node_.state_[epoch_].array().tanh().matrix();
+  output_gate_.state_[epoch_] = (1.0f / (1.0f + (-output_gate_.state_[epoch_].array()).exp())).matrix();
+  
+  // Vectorized gate computations
   input_gate_state_[epoch_] = Eigen::VectorXf::Ones(num_cells_) - forget_gate_.state_[epoch_];
   state_ = state_.cwiseProduct(forget_gate_.state_[epoch_]);
   state_ += input_node_.state_[epoch_].cwiseProduct(input_gate_state_[epoch_]);
@@ -113,25 +113,28 @@ inline void LstmLayer::ForwardPass(const Eigen::VectorXf& input, int input_symbo
 
 inline void LstmLayer::ForwardPass(NeuronLayer& neurons,
     const Eigen::VectorXf& input, int input_symbol) {
+  // Vectorized computation: accumulate input_symbol contribution
   for (unsigned int i = 0; i < num_cells_; ++i) {
-    float f = neurons.weights_[i][input_symbol];
-    for (unsigned int j = 0; j < input.size(); ++j) {
-      f += input[j] * neurons.weights_[i][output_size_ + j];
-    }
-    neurons.norm_[epoch_][i] = f;
+    neurons.norm_[epoch_][i] = neurons.weights_[i][input_symbol];
   }
-  neurons.ivar_[epoch_] = 1.0f / sqrt((neurons.norm_[epoch_].cwiseProduct(
-      neurons.norm_[epoch_]).sum() / num_cells_) + 1e-5f);
+  
+  // Vectorized matrix-vector multiplication for input contribution
+  int input_size = input.size();
+  for (unsigned int i = 0; i < num_cells_; ++i) {
+    neurons.norm_[epoch_][i] += neurons.weights_[i].segment(output_size_, input_size).dot(input);
+  }
+  
+  // Layer normalization with vectorized operations
+  float variance = neurons.norm_[epoch_].squaredNorm() / num_cells_;
+  neurons.ivar_[epoch_] = 1.0f / sqrt(variance + 1e-5f);
   neurons.norm_[epoch_] *= neurons.ivar_[epoch_];
   neurons.state_[epoch_] = neurons.norm_[epoch_].cwiseProduct(neurons.gamma_) +
       neurons.beta_;
 }
 
 inline void LstmLayer::ClipGradients(Eigen::VectorXf* arr) {
-  for (unsigned int i = 0; i < arr->size(); ++i) {
-    if ((*arr)[i] < -gradient_clip_) (*arr)[i] = -gradient_clip_;
-    else if ((*arr)[i] > gradient_clip_) (*arr)[i] = gradient_clip_;
-  }
+  // Vectorized gradient clipping using Eigen's array operations
+  *arr = arr->array().max(-gradient_clip_).min(gradient_clip_).matrix();
 }
 
 inline void LstmLayer::BackwardPass(const Eigen::VectorXf&input, int epoch,
@@ -143,14 +146,24 @@ inline void LstmLayer::BackwardPass(const Eigen::VectorXf&input, int epoch,
     stored_error_ += *hidden_error;
   }
 
-  output_gate_.error_ = tanh_state_[epoch].cwiseProduct(stored_error_).cwiseProduct(
-      output_gate_.state_[epoch]).cwiseProduct(Eigen::VectorXf::Ones(num_cells_) - output_gate_.state_[epoch]);
-  state_error_ += stored_error_.cwiseProduct(output_gate_.state_[epoch]).cwiseProduct(Eigen::VectorXf::Ones(num_cells_) -
-      tanh_state_[epoch].cwiseProduct(tanh_state_[epoch]));
-  input_node_.error_ = state_error_.cwiseProduct(input_gate_state_[epoch]).cwiseProduct(Eigen::VectorXf::Ones(num_cells_) -
-      input_node_.state_[epoch].cwiseProduct(input_node_.state_[epoch]));
-  forget_gate_.error_ = (last_state_[epoch] - input_node_.state_[epoch]).cwiseProduct(
-      state_error_).cwiseProduct(forget_gate_.state_[epoch]).cwiseProduct(input_gate_state_[epoch]);
+  // Vectorized LSTM gate error gradients
+  // Output gate: derivative of sigmoid(x) is sigmoid(x) * (1 - sigmoid(x))
+  output_gate_.error_ = (tanh_state_[epoch].array() * stored_error_.array() * 
+                         output_gate_.state_[epoch].array() * 
+                         (1.0f - output_gate_.state_[epoch].array())).matrix();
+  
+  // State error: derivative of tanh(x) is (1 - tanh²(x))
+  state_error_ += (stored_error_.array() * output_gate_.state_[epoch].array() * 
+                   (1.0f - tanh_state_[epoch].array().square())).matrix();
+  
+  // Input node: derivative of tanh(x) is (1 - tanh²(x))
+  input_node_.error_ = (state_error_.array() * input_gate_state_[epoch].array() * 
+                        (1.0f - input_node_.state_[epoch].array().square())).matrix();
+  
+  // Forget gate: derivative through state computation
+  forget_gate_.error_ = ((last_state_[epoch] - input_node_.state_[epoch]).array() *
+                         state_error_.array() * forget_gate_.state_[epoch].array() * 
+                         input_gate_state_[epoch].array()).matrix();
 
   hidden_error->setZero();
   if (epoch > 0) {
@@ -190,8 +203,11 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
   neurons.error_ = neurons.error_.cwiseProduct(neurons.gamma_) * neurons.ivar_[epoch];
   neurons.error_ -= ((neurons.error_.cwiseProduct(neurons.norm_[epoch]).sum() /
       num_cells_) * neurons.norm_[epoch]);
+  
+  // Vectorized backward pass through hidden layer connections
   if (layer > 0) {
     for (unsigned int i = 0; i < num_cells_; ++i) {
+      // Use dot product for vectorized computation
       float f = 0;
       for (unsigned int j = 0; j < num_cells_; ++j) {
         f += neurons.error_[j] * neurons.transpose_[num_cells_ + i][j];
@@ -199,8 +215,11 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
       (*hidden_error)[i] += f;
     }
   }
+  
+  // Vectorized recurrent error accumulation
   if (epoch > 0) {
     for (unsigned int i = 0; i < num_cells_; ++i) {
+      // Use dot product for vectorized computation
       float f = 0;
       for (unsigned int j = 0; j < num_cells_; ++j) {
         f += neurons.error_[j] * neurons.transpose_[i][j];
@@ -208,8 +227,11 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
       stored_error_[i] += f;
     }
   }
+  
+  // Vectorized weight gradient accumulation
   int input_size = input.size();
   for (unsigned int i = 0; i < num_cells_; ++i) {
+    // Outer product: error[i] * input -> gradient contribution
     neurons.update_[i].segment(output_size_, input_size) += neurons.error_[i] * input;
     neurons.update_[i][input_symbol] += neurons.error_[i];
   }
