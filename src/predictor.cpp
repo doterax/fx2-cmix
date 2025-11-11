@@ -52,7 +52,10 @@ void Predictor::AddBracket() {
 }
 
 void Predictor::AddPPMD() {
-  byte_model_.emplace(25, 14000, manager_.bit_context_, vocab_);
+  // Memory parameter: value << 20 bytes allocated
+  // 1024 = 1 GB, 2048 = 2 GB, 14000 = 13.67 GB (original - too high!)
+  // Reducing to 1024 MB (1 GB) for reasonable memory usage (original was 14000)
+  byte_model_.emplace(25, 1024, manager_.bit_context_, vocab_);
 }
 
 void Predictor::AddWord() {

@@ -50,7 +50,7 @@ def test_seed(seed: int, cmix_path: str, input_file: str, temp_dir: str) -> Comp
             cmd,
             capture_output=True,
             text=True,
-            timeout=60  # 60 second timeout
+            timeout=600  # 600 second timeout
         )
         elapsed_time = time.time() - start_time
         

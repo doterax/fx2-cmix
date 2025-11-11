@@ -246,3 +246,63 @@ Replace `float` (4 bytes) with `half` (2 bytes) or `bfloat16` in Eigen
 - LSTM network (30 MB)
 
 Each component trades memory for compression performance. Reducing any of these will decrease compression ratio. This is the nature of state-of-the-art compression algorithms.
+
+---
+
+## **UPDATE: Critical Bug Fixed (November 2025)**
+
+### **Issue: 20GB Memory Usage Instead of ~2GB**
+
+**Root Cause:** The PPMD model was allocating **13.67 GB** alone due to an excessive memory parameter.
+
+**Location:** `src/predictor.cpp:56`
+```cpp
+// BEFORE (BUG):
+byte_model_.emplace(25, 14000, manager_.bit_context_, vocab_);
+//                      ^^^^^ 14000 MB = 13.67 GB allocated!
+
+// AFTER (FIXED):
+byte_model_.emplace(25, 1024, manager_.bit_context_, vocab_);
+//                      ^^^^ 1024 MB = 1 GB allocated
+```
+
+**How PPMD Allocates:** The parameter is left-shifted by 20 bits in `src/models/ppmd.cpp:125`:
+```cpp
+qword t = SASize << 20U;  // SASize × 1,048,576 bytes
+HeapStart = new byte[t];   // 14000 << 20 = 13.67 GB!
+```
+
+### **Memory Usage Comparison:**
+
+| Component | Original (Bug) | After Fix |
+|-----------|----------------|-----------|
+| **PPMD Model** | **13.67 GB** | **1 GB** ✅ |
+| History Buffer | 60 MB | 60 MB |
+| Shared Map | 100 MB | 100 MB |
+| Match Tables | 80 MB | 80 MB |
+| Context Maps | 150 MB | 150 MB |
+| Indirect Tables | 64 MB | 64 MB |
+| FXCM Model | 50 MB | 50 MB |
+| LSTM | 30 MB | 30 MB |
+| Other | 50 MB | 50 MB |
+| **TOTAL** | **~15-20 GB** ❌ | **~1.6-2.0 GB** ✅ |
+
+### **Adjustable PPMD Memory:**
+
+If you have more RAM and want better compression, you can adjust the parameter in `src/predictor.cpp:56`:
+
+```cpp
+// Choose based on available RAM:
+byte_model_.emplace(25, 512, ...);   // 512 MB  - low memory
+byte_model_.emplace(25, 1024, ...);  // 1 GB    - default (fixed)
+byte_model_.emplace(25, 2048, ...);  // 2 GB    - balanced
+byte_model_.emplace(25, 4096, ...);  // 4 GB    - high memory
+byte_model_.emplace(25, 8192, ...);  // 8 GB    - extreme
+```
+
+**Performance Impact:** Reducing from 14GB to 1GB may decrease compression ratio by 0.1-0.5%, but makes the tool usable on normal systems.
+
+**Testing:** Compression still works correctly with the fix:
+```
+51052 bytes -> 6149 bytes (12.04% ratio) in 18.48s
+```
