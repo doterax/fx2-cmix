@@ -36,8 +36,8 @@ namespace {
 //   return __tmp;
 // }
 
-inline void Adam(std::valarray<float>* g, std::valarray<float>* m,
-    std::valarray<float>* v, std::valarray<float>* w, float learning_rate,
+inline void Adam(Eigen::VectorXf* g, Eigen::VectorXf* m,
+    Eigen::VectorXf* v, Eigen::VectorXf* w, float learning_rate,
     float t) {
   const float beta1 = 0.025, beta2 = 0.9999, eps = 1e-6f; 
   float alpha;
@@ -49,13 +49,13 @@ inline void Adam(std::valarray<float>* g, std::valarray<float>* m,
   (*m) *= beta1;
   (*m) += (1.0f - beta1) * (*g);
   (*v) *= beta2;
-  (*v) += (1.0f - beta2) * (*g) * (*g);
+  (*v) += (1.0f - beta2) * (*g).cwiseProduct(*g);
   if (t < UPDATE_LIMIT) {
-    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, t))) /
-        (sqrt((*v) / (float)(1.0f - pow(beta2, t)) + eps)));
+    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, t))).cwiseQuotient(
+        ((*v) / (float)(1.0f - pow(beta2, t))).array().sqrt().matrix() + eps * Eigen::VectorXf::Ones(w->size())));
   } else {
-    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, UPDATE_LIMIT))) /
-        (sqrt((*v) / (float)(1.0f - pow(beta2, UPDATE_LIMIT)) + eps)));
+    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, UPDATE_LIMIT))).cwiseQuotient(
+        ((*v) / (float)(1.0f - pow(beta2, UPDATE_LIMIT))).array().sqrt().matrix() + eps * Eigen::VectorXf::Ones(w->size())));
   }
 }
 
@@ -64,10 +64,12 @@ inline void Adam(std::valarray<float>* g, std::valarray<float>* m,
 inline LstmLayer::LstmLayer(unsigned int input_size, unsigned int auxiliary_input_size,
     unsigned int output_size, unsigned int num_cells, int horizon,
     float gradient_clip, float learning_rate) :
-    state_(num_cells), state_error_(num_cells), stored_error_(num_cells),
-    tanh_state_(std::valarray<float>(num_cells), horizon),
-    input_gate_state_(std::valarray<float>(num_cells), horizon),
-    last_state_(std::valarray<float>(num_cells), horizon),
+    state_(Eigen::VectorXf::Zero(num_cells)), 
+    state_error_(Eigen::VectorXf::Zero(num_cells)), 
+    stored_error_(Eigen::VectorXf::Zero(num_cells)),
+    tanh_state_(horizon, Eigen::VectorXf::Zero(num_cells)),
+    input_gate_state_(horizon, Eigen::VectorXf::Zero(num_cells)),
+    last_state_(horizon, Eigen::VectorXf::Zero(num_cells)),
     gradient_clip_(gradient_clip), learning_rate_(learning_rate),
     num_cells_(num_cells), epoch_(0), horizon_(horizon),
     input_size_(auxiliary_input_size), output_size_(output_size),
@@ -87,8 +89,8 @@ inline LstmLayer::LstmLayer(unsigned int input_size, unsigned int auxiliary_inpu
   }
 }
 
-inline void LstmLayer::ForwardPass(const std::valarray<float>& input, int input_symbol,
-    std::valarray<float>* hidden, int hidden_start) {
+inline void LstmLayer::ForwardPass(const Eigen::VectorXf& input, int input_symbol,
+    Eigen::VectorXf* hidden, int hidden_start) {
   last_state_[epoch_] = state_;
   ForwardPass(forget_gate_, input, input_symbol);
   ForwardPass(input_node_, input, input_symbol);
@@ -100,18 +102,17 @@ inline void LstmLayer::ForwardPass(const std::valarray<float>& input, int input_
     output_gate_.state_[epoch_][i] = Sigmoid::Logistic(
         output_gate_.state_[epoch_][i]);
   }
-  input_gate_state_[epoch_] = 1.0f - forget_gate_.state_[epoch_];
-  state_ *= forget_gate_.state_[epoch_];
-  state_ += input_node_.state_[epoch_] * input_gate_state_[epoch_];
-  tanh_state_[epoch_] = FAST_TANH_VEC(state_);
-  std::slice slice = std::slice(hidden_start, num_cells_, 1);
-  (*hidden)[slice] = output_gate_.state_[epoch_] * tanh_state_[epoch_];
+  input_gate_state_[epoch_] = Eigen::VectorXf::Ones(num_cells_) - forget_gate_.state_[epoch_];
+  state_ = state_.cwiseProduct(forget_gate_.state_[epoch_]);
+  state_ += input_node_.state_[epoch_].cwiseProduct(input_gate_state_[epoch_]);
+  tanh_state_[epoch_] = state_.array().tanh().matrix();
+  hidden->segment(hidden_start, num_cells_) = output_gate_.state_[epoch_].cwiseProduct(tanh_state_[epoch_]);
   ++epoch_;
   if (epoch_ == horizon_) epoch_ = 0;
 }
 
 inline void LstmLayer::ForwardPass(NeuronLayer& neurons,
-    const std::valarray<float>& input, int input_symbol) {
+    const Eigen::VectorXf& input, int input_symbol) {
   for (unsigned int i = 0; i < num_cells_; ++i) {
     float f = neurons.weights_[i][input_symbol];
     for (unsigned int j = 0; j < input.size(); ++j) {
@@ -119,42 +120,42 @@ inline void LstmLayer::ForwardPass(NeuronLayer& neurons,
     }
     neurons.norm_[epoch_][i] = f;
   }
-  neurons.ivar_[epoch_] = 1.0f / sqrt(((neurons.norm_[epoch_] *
+  neurons.ivar_[epoch_] = 1.0f / sqrt((neurons.norm_[epoch_].cwiseProduct(
       neurons.norm_[epoch_]).sum() / num_cells_) + 1e-5f);
   neurons.norm_[epoch_] *= neurons.ivar_[epoch_];
-  neurons.state_[epoch_] = neurons.norm_[epoch_] * neurons.gamma_ +
+  neurons.state_[epoch_] = neurons.norm_[epoch_].cwiseProduct(neurons.gamma_) +
       neurons.beta_;
 }
 
-inline void LstmLayer::ClipGradients(std::valarray<float>* arr) {
+inline void LstmLayer::ClipGradients(Eigen::VectorXf* arr) {
   for (unsigned int i = 0; i < arr->size(); ++i) {
     if ((*arr)[i] < -gradient_clip_) (*arr)[i] = -gradient_clip_;
     else if ((*arr)[i] > gradient_clip_) (*arr)[i] = gradient_clip_;
   }
 }
 
-inline void LstmLayer::BackwardPass(const std::valarray<float>&input, int epoch,
-    int layer, int input_symbol, std::valarray<float>* hidden_error) {
+inline void LstmLayer::BackwardPass(const Eigen::VectorXf&input, int epoch,
+    int layer, int input_symbol, Eigen::VectorXf* hidden_error) {
   if (epoch == (int)horizon_ - 1) {
     stored_error_ = *hidden_error;
-    state_error_ = 0;
+    state_error_.setZero();
   } else {
     stored_error_ += *hidden_error;
   }
 
-  output_gate_.error_ = tanh_state_[epoch] * stored_error_ *
-      output_gate_.state_[epoch] * (1.0f - output_gate_.state_[epoch]);
-  state_error_ += stored_error_ * output_gate_.state_[epoch] * (1.0f -
-      (tanh_state_[epoch] * tanh_state_[epoch]));
-  input_node_.error_ = state_error_ * input_gate_state_[epoch] * (1.0f -
-      (input_node_.state_[epoch] * input_node_.state_[epoch]));
-  forget_gate_.error_ = (last_state_[epoch] - input_node_.state_[epoch]) *
-      state_error_ * forget_gate_.state_[epoch] * input_gate_state_[epoch];
+  output_gate_.error_ = tanh_state_[epoch].cwiseProduct(stored_error_).cwiseProduct(
+      output_gate_.state_[epoch]).cwiseProduct(Eigen::VectorXf::Ones(num_cells_) - output_gate_.state_[epoch]);
+  state_error_ += stored_error_.cwiseProduct(output_gate_.state_[epoch]).cwiseProduct(Eigen::VectorXf::Ones(num_cells_) -
+      tanh_state_[epoch].cwiseProduct(tanh_state_[epoch]));
+  input_node_.error_ = state_error_.cwiseProduct(input_gate_state_[epoch]).cwiseProduct(Eigen::VectorXf::Ones(num_cells_) -
+      input_node_.state_[epoch].cwiseProduct(input_node_.state_[epoch]));
+  forget_gate_.error_ = (last_state_[epoch] - input_node_.state_[epoch]).cwiseProduct(
+      state_error_).cwiseProduct(forget_gate_.state_[epoch]).cwiseProduct(input_gate_state_[epoch]);
 
-  *hidden_error = 0;
+  hidden_error->setZero();
   if (epoch > 0) {
-    state_error_ *= forget_gate_.state_[epoch];
-    stored_error_ = 0;
+    state_error_ = state_error_.cwiseProduct(forget_gate_.state_[epoch]);
+    stored_error_.setZero();
   } else {
     if (update_steps_ < UPDATE_LIMIT) {
       ++update_steps_;
@@ -171,13 +172,13 @@ inline void LstmLayer::BackwardPass(const std::valarray<float>&input, int epoch,
 }
 
 inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
-    const std::valarray<float>&input, int epoch, int layer, int input_symbol,
-    std::valarray<float>* hidden_error) {
+    const Eigen::VectorXf&input, int epoch, int layer, int input_symbol,
+    Eigen::VectorXf* hidden_error) {
   if (epoch == (int)horizon_ - 1) {
-    neurons.gamma_u_ = 0;
-    neurons.beta_u_ = 0;
+    neurons.gamma_u_.setZero();
+    neurons.beta_u_.setZero();
     for (unsigned int i = 0; i < num_cells_; ++i) {
-      neurons.update_[i] = 0;
+      neurons.update_[i].setZero();
       int offset = output_size_ + input_size_;
       for (unsigned int j = 0; j < neurons.transpose_.size(); ++j) {
         neurons.transpose_[j][i] = neurons.weights_[i][j + offset];
@@ -185,10 +186,10 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
     }
   }
   neurons.beta_u_ += neurons.error_;
-  neurons.gamma_u_ += neurons.error_ * neurons.norm_[epoch];
-  neurons.error_ *= neurons.gamma_ * neurons.ivar_[epoch];
-  neurons.error_ -= ((neurons.error_ * neurons.norm_[epoch]).sum() /
-      num_cells_) * neurons.norm_[epoch];
+  neurons.gamma_u_ += neurons.error_.cwiseProduct(neurons.norm_[epoch]);
+  neurons.error_ = neurons.error_.cwiseProduct(neurons.gamma_) * neurons.ivar_[epoch];
+  neurons.error_ -= ((neurons.error_.cwiseProduct(neurons.norm_[epoch]).sum() /
+      num_cells_) * neurons.norm_[epoch]);
   if (layer > 0) {
     for (unsigned int i = 0; i < num_cells_; ++i) {
       float f = 0;
@@ -207,9 +208,9 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
       stored_error_[i] += f;
     }
   }
-  std::slice slice = std::slice(output_size_, input.size(), 1);
+  int input_size = input.size();
   for (unsigned int i = 0; i < num_cells_; ++i) {
-    neurons.update_[i][slice] += neurons.error_[i] * input;
+    neurons.update_[i].segment(output_size_, input_size) += neurons.error_[i] * input;
     neurons.update_[i][input_symbol] += neurons.error_[i];
   }
   if (epoch == 0) {
@@ -224,8 +225,8 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
   }
 }
 
-inline std::vector<std::valarray<std::valarray<float>>*> LstmLayer::Weights() {
-  std::vector<std::valarray<std::valarray<float>>*> weights;
+inline std::vector<std::vector<Eigen::VectorXf>*> LstmLayer::Weights() {
+  std::vector<std::vector<Eigen::VectorXf>*> weights;
   weights.push_back(&forget_gate_.weights_);
   weights.push_back(&input_node_.weights_);
   weights.push_back(&output_gate_.weights_);

@@ -6,8 +6,8 @@
 #include <utility>
 #include <math.h>
 // #include <sys/resource.h>
-Mixer::Mixer(const std::valarray<float>& inputs,
-    const std::valarray<float>& extra_inputs,
+Mixer::Mixer(const Eigen::VectorXf& inputs,
+    const Eigen::VectorXf& extra_inputs,
     const unsigned long long& context, float learning_rate,
     unsigned int extra_input_size) : inputs_(inputs),
     extra_inputs_vec_(extra_inputs), extra_inputs_size_(extra_input_size),/*extra_inputs_(extra_input_size),*/ p_(0.5),
@@ -42,18 +42,12 @@ ContextData* Mixer::GetContextData() {
 
 float Mixer::Mix() {
   ContextData* data = GetContextData();
-  float p = 0;
-  for (std::size_t i = 0; i < inputs_.size(); ++i) {
-    p += inputs_[i] * data->weights[i];
-  }
+  float p = inputs_.dot(data->weights);
   p_ = p;
   // for (std::size_t i = 0; i < extra_inputs_.size(); ++i) {
   //   extra_inputs_[i] = extra_inputs_vec_[i];
   // }
-  float e = 0;
-  for (uint16_t i = 0; i < extra_inputs_size_; ++i) {
-    e += extra_inputs_vec_[i] * data->extra_weights[i];
-  }
+  float e = extra_inputs_vec_.head(extra_inputs_size_).dot(data->extra_weights);
   p_ += e;
   return p_;
 }
@@ -80,7 +74,7 @@ void Mixer::Perceive(int bit) {
   ContextData* data = GetContextData();
   
   data->weights -= update * inputs_;
-  data->extra_weights -= update * extra_inputs_vec_[std::slice(0,extra_inputs_size_,1)];
+  data->extra_weights -= update * extra_inputs_vec_.head(extra_inputs_size_);
  /*if ((data->steps & 1023) == 0) {
     data->weights *= 1.0f - 3.0e-6f;
     data->extra_weights *= 1.0f - 3.0e-6f;

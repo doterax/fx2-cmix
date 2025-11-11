@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <memory>
+#include <Eigen/Core>
 
 #include "../models/byte-model.h"
 #include "lstm.h"
@@ -17,8 +18,8 @@ class ByteMixer : public ByteModel {
  private:
   std::unique_ptr<Lstm> lstm_;
   const unsigned int& byte_;
-  std::valarray<int> byte_map_;
-  std::valarray<float> inputs_;
+  Eigen::VectorXi byte_map_;
+  Eigen::VectorXf inputs_;
   unsigned int num_models_, vocab_size_, offset_;
 };
 

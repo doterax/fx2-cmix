@@ -180,7 +180,7 @@ float Predictor::Predict() {
   auto fxcm_model_index = input_index - 1;
 
   for (unsigned int i = 0; i < direct_models_.size(); ++i) {
-    const std::valarray<float> &outputs = direct_models_[i].Predict();
+    const Eigen::VectorXf &outputs = direct_models_[i].Predict();
     for (unsigned int j = 0; j < outputs.size(); ++j) {
       layers_[0].SetInput(input_index, outputs[j]);
       ++input_index;
@@ -188,7 +188,7 @@ float Predictor::Predict() {
   }
 
   for (unsigned int i = 0; i < match_models_.size(); ++i) {
-    const std::valarray<float> &outputs = match_models_[i].Predict();
+    const Eigen::VectorXf &outputs = match_models_[i].Predict();
     for (unsigned int j = 0; j < outputs.size(); ++j) {
       layers_[0].SetInput(input_index, outputs[j]);
       ++input_index;
@@ -196,7 +196,7 @@ float Predictor::Predict() {
   }
 
   for (unsigned int i = 0; i < indirect_ns_models_.size(); ++i) {
-    const std::valarray<float> &outputs = indirect_ns_models_[i].Predict();
+    const Eigen::VectorXf &outputs = indirect_ns_models_[i].Predict();
     for (unsigned int j = 0; j < outputs.size(); ++j) {
       layers_[0].SetInput(input_index, outputs[j]);
       ++input_index;
@@ -204,7 +204,7 @@ float Predictor::Predict() {
   }
 
   for (unsigned int i = 0; i < indirect_r_models_.size(); ++i) {
-    const std::valarray<float> &outputs = indirect_r_models_[i].Predict();
+    const Eigen::VectorXf &outputs = indirect_r_models_[i].Predict();
     for (unsigned int j = 0; j < outputs.size(); ++j) {
       layers_[0].SetInput(input_index, outputs[j]);
       ++input_index;
@@ -296,7 +296,7 @@ void Predictor::Perceive(int bit) {
 
     byte_model_->ByteUpdate();
 
-    const std::valarray<float> &p = byte_model_->BytePredict();
+    const Eigen::VectorXf &p = byte_model_->BytePredict();
     for (unsigned int j = 0; j < 256; ++j) {
       byte_mixer_->SetInput(j, p[j]);
     }

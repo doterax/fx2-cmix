@@ -90,7 +90,7 @@ inline int max(int a, int b) {return a<b?b:a;}
 #endif
 
 int num_models = 439+1-2-7;
-std::valarray<float> model_predictions(0.5f, num_models);
+Eigen::VectorXf model_predictions = Eigen::VectorXf::Constant(num_models, 0.5f);
 unsigned int prediction_index = 0;
 float conversion_factor = 1.0 / 4095;
 
@@ -4810,7 +4810,7 @@ FXCM::FXCM() {
     predictor_.reset(new fxcmv1::Predictor());
 }
 
-const std::valarray<float>& FXCM::Predict() const{
+const Eigen::VectorXf& FXCM::Predict() const{
     return fxcmv1::model_predictions;
 }
 

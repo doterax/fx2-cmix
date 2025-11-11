@@ -125,7 +125,7 @@ void ExtractVocab(unsigned long long num_bytes, std::ifstream *is,
     (*vocab)[c]     = true;
   }
   assert(num_bytes >= 2);
-  std::valarray<int> byte_map(0, 256);
+  Eigen::VectorXi byte_map = Eigen::VectorXi::Zero(256);
   uint16_t           offset = 0;
   for (int i = 0; i < 256; ++i) {
     byte_map[i] = offset;

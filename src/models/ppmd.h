@@ -4,6 +4,7 @@
 #include "byte-model.h"
 
 #include <memory>
+#include <Eigen/Core>
 
 namespace PPMD {
 
@@ -18,7 +19,7 @@ class PPMD : public ByteModel {
  private:
   const unsigned int& byte_;
   std::unique_ptr<ppmd_Model> ppmd_model_;
-  std::valarray<int> byte_map_;
+  Eigen::VectorXi byte_map_;
 };
 
 } // namespace PPMD

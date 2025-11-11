@@ -1329,7 +1329,8 @@ void ppmd_UpdateByte( uint c ) {
 unsigned long long counter_ = 0;
 
 PPMD::PPMD(int order, int memory, const unsigned int& bit_context,
-    const std::vector<bool>& vocab) : ByteModel(vocab), byte_(bit_context) {
+    const std::vector<bool>& vocab) : ByteModel(vocab), byte_(bit_context),
+    byte_map_(Eigen::VectorXi::Zero(256)) {
   ppmd_model_.reset(new ppmd_Model());
   ppmd_model_->Init(order,memory,1,0);
 }

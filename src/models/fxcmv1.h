@@ -18,7 +18,7 @@ public:
 class FXCM : public Model {
  public:
   FXCM();
-  const std::valarray<float>& Predict() const;
+  const Eigen::VectorXf& Predict() const;
   unsigned int NumOutputs();
   void Perceive(int bit);
   void ByteUpdate() {};

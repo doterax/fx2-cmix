@@ -12,7 +12,7 @@ Direct::Direct(const unsigned long long& byte_context,
   }
 }
 
-const std::valarray<float>& Direct::Predict() const {
+const Eigen::VectorXf& Direct::Predict() const {
   outputs_[0] = predictions_[byte_context_][bit_context_];
   return outputs_;
 }

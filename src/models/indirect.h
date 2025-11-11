@@ -15,7 +15,7 @@ class Indirect : public Model {
       const unsigned long long& byte_context,
       const unsigned int& bit_context, float delta,
       std::vector<unsigned char>& map);
-  const std::valarray<float>& Predict() const;
+  const Eigen::VectorXf& Predict() const;
   void Perceive(int bit);
   void ByteUpdate();
 
@@ -44,7 +44,7 @@ Indirect<StateType>::Indirect(const StateType& state,
 }
 
 template<typename StateType>
-const std::valarray<float>& Indirect<StateType>::Predict() const {
+const Eigen::VectorXf& Indirect<StateType>::Predict() const {
   outputs_[0] = predictions_[map_[map_index_ + bit_context_]];
   return outputs_;
 }

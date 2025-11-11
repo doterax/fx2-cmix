@@ -3,22 +3,22 @@
 
 #include "model.h"
 
-#include <valarray>
+#include <Eigen/Core>
 #include <vector>
 
 class ByteModel : public Model {
  public:
   virtual ~ByteModel() {}
   ByteModel(const std::vector<bool>& vocab);
-  const std::valarray<float>& BytePredict();
-   std::valarray<float>& Predict() ;
+  const Eigen::VectorXf& BytePredict();
+   Eigen::VectorXf& Predict() ;
   void Perceive(int bit);
   int ex;
  protected:
   void ByteUpdate();
   int top_, mid_, bot_;
   const std::vector<bool>& vocab_;
-  std::valarray<float> probs_;
+  Eigen::VectorXf probs_;
 };
 
 #endif

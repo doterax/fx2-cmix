@@ -13,7 +13,7 @@ DirectHash::DirectHash(const unsigned long long& byte_context,
   }
 }
 
-const std::valarray<float>& DirectHash::Predict() const {
+const Eigen::VectorXf& DirectHash::Predict() const {
   outputs_[0] = predictions_[index_][bit_context_];
   return outputs_;
 }

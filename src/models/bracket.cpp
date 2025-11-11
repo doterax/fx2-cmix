@@ -11,7 +11,7 @@ Bracket::Bracket(const unsigned int& bit_context, int distance_limit,
 }
 
 void Bracket::ByteUpdate() {
-  probs_ = 1./256;
+  probs_.setConstant(1./256);
   if (active_.empty() || (brackets_.find(byte_) != brackets_.end() &&
       !(active_[active_.size() - 1] == byte_ && brackets_[byte_] == byte_))) {
     if (brackets_.find(byte_) != brackets_.end()) {
@@ -22,7 +22,7 @@ void Bracket::ByteUpdate() {
         distance_.erase(distance_.begin());
       }
       float p = (1. * stats_[byte_][0].first) / stats_[byte_][0].second;
-      probs_ = (1 - p) / 255;
+      probs_.setConstant((1 - p) / 255);
       probs_[brackets_[byte_]] = p;
     }
   } else {
@@ -44,7 +44,7 @@ void Bracket::ByteUpdate() {
         int distance = distance_[distance_.size() - 1];
         float p = (1. * stats_[active][distance].first) /
             stats_[active][distance].second;
-        probs_ = (1 - p) / 255;
+        probs_.setConstant((1 - p) / 255);
         probs_[brackets_[active]] = p;
       }
     } else {
@@ -52,7 +52,7 @@ void Bracket::ByteUpdate() {
       ++distance;
       float p = (1. * stats_[active][distance].first) /
           stats_[active][distance].second;
-      probs_ = (1 - p) / 255;
+      probs_.setConstant((1 - p) / 255);
       probs_[brackets_[active]] = p;
     }
   }

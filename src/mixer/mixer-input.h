@@ -3,7 +3,7 @@
 
 #include "sigmoid.h"
 
-#include <valarray>
+#include <Eigen/Core>
 #include <vector>
 
 class MixerInput {
@@ -16,14 +16,14 @@ class MixerInput {
   void SetExtraInput(size_t index, float p);
   void SetExtraInputSize(size_t size) { extra_inputs_.resize(size);};
   //void ClearExtraInputs() { extra_inputs_.clear(); }
-  const std::valarray<float>& Inputs() const { return inputs_; }
+  const Eigen::VectorXf& Inputs() const { return inputs_; }
   //const std::vector<float>& ExtraInputs() const { return extra_inputs_; }
   const auto& ExtraInputs() const { return extra_inputs_; }
 
  private:
-  std::valarray<float> inputs_;
+  Eigen::VectorXf inputs_;
   //std::vector<float> extra_inputs_;
-  std::valarray<float> extra_inputs_;
+  Eigen::VectorXf extra_inputs_;
   const Sigmoid& sigmoid_;
   float min_, max_, stretched_min_, stretched_max_;
 };

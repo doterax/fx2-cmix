@@ -10,7 +10,7 @@ class DirectHash : public Model {
  public:
   DirectHash(const unsigned long long& byte_context,
       const unsigned int& bit_context, int limit, float delta, int size);
-  const std::valarray<float>& Predict() const;
+  const Eigen::VectorXf& Predict() const;
   void Perceive(int bit);
   void ByteUpdate();
 

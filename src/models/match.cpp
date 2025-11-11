@@ -14,7 +14,7 @@ Match::Match(const std::vector<unsigned char>& history,
   counts_.fill(0);
 }
 
-const std::valarray<float>& Match::Predict() const {
+const Eigen::VectorXf& Match::Predict() const {
   if (cur_byte_ & bit_pos_) outputs_[0] = predictions_[match_length_];
   else outputs_[0] = 1 - predictions_[match_length_];
   return outputs_;
