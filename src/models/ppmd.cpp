@@ -1,6 +1,17 @@
 // ppmd is written by Dmitry Shkarin.
 // mod_ppmd is adapted from ppmd by Eugene Shelwien.
 // This file is adapted from mod_ppmd_v2: http://encode.su/threads/2515-mod_ppmd
+//
+// PPMD (Prediction by Partial Matching, variant D) is a sophisticated
+// statistical compression algorithm that predicts the next byte based on context.
+//
+// Key components:
+// 1. Custom Memory Allocator - Efficiently manages millions of small allocations
+// 2. Context Tree - Stores symbol statistics up to order 25
+// 3. Prediction Engine - Generates probabilities with escape mechanism
+// 4. Adaptive Learning - Updates frequencies as data is processed
+//
+// See PPMD.md for detailed documentation.
 
 #include "ppmd.h"
 
@@ -28,6 +39,10 @@ static signed char         EscCoef[12]   = {16, -10, 1,  51, 14,  89,
 static const byte          ExpEscape[16] = {51, 43, 18, 12, 11, 9, 8, 7,
                                             6,  5,  4,  3,  3,  2, 2, 2};
 
+// Main PPMD model structure containing:
+// - Custom memory allocator for efficient context management
+// - Context tree data structures
+// - Prediction and update algorithms
 struct ppmd_Model {
 
   typedef unsigned short     word;
@@ -37,6 +52,9 @@ struct ppmd_Model {
 
   enum { SCALE = 1 << 15 };
 
+  // Memory allocation unit sizes
+  // UNIT_SIZE = 12 bytes (base allocation unit)
+  // N_INDEXES = number of free list buckets for different sizes
   enum {
     UNIT_SIZE = 12,
     N1        = 4,
@@ -46,8 +64,10 @@ struct ppmd_Model {
     N_INDEXES = N1 + N2 + N3 + N4
   };
 
-  byte *HeapStart;
+  byte *HeapStart;  // Start of allocated heap memory
 
+  // Pointer compression: Convert pointers to 32-bit indices to save memory
+  // On 64-bit systems, this saves 4 bytes per pointer (50% reduction)
   uint  Ptr2Indx(void *p) {
     qword addr = ((byte *)p) - HeapStart;
     uint  lim  = (UnitsStart - HeapStart);
@@ -120,11 +140,15 @@ struct ppmd_Model {
   byte             *HiUnit;
   byte             *AuxUnit;
 
-  uint              U2B(uint NU) { return 8 * NU + 4 * NU; }
+  uint              U2B(uint NU) { return 8 * NU + 4 * NU; }  // Units to Bytes: NU * 12
 
+  // ⚠️ CRITICAL: Memory allocation function
+  // SASize is in MEGABYTES and gets left-shifted by 20 bits (multiplied by 1,048,576)
+  // Example: SASize=1024 → 1024 << 20 = 1,073,741,824 bytes = 1 GB
+  // Bug history: Was set to 14000 (13.67 GB!), fixed to 1024 (1 GB)
   int               StartSubAllocator(qword SASize) {
-    qword t   = SASize << 20U;
-    HeapStart = new byte[t];
+    qword t   = SASize << 20U;  // Convert MB to bytes: SASize * 1,048,576
+    HeapStart = new byte[t];    // Allocate main heap
 
     if (HeapStart == NULL)
       return 0;
@@ -132,10 +156,12 @@ struct ppmd_Model {
     return 1;
   }
 
+  // Initialize memory layout:
+  // HeapStart -> pText (grows up) -> Free Lists -> UnitsStart <- LoUnit/HiUnit <- (grows down)
   void InitSubAllocator() {
-    memset(BList, 0, sizeof(BList));
+    memset(BList, 0, sizeof(BList));  // Clear free list buckets
     HiUnit     = (pText = HeapStart) + SubAllocatorSize;
-    qword Diff = SubAllocatorSize / 8 / UNIT_SIZE * 7 * UNIT_SIZE;
+    qword Diff = SubAllocatorSize / 8 / UNIT_SIZE * 7 * UNIT_SIZE;  // 7/8 of heap for contexts
     LoUnit = UnitsStart = HiUnit - Diff;
     GlueCount = GlueCount1 = 0;
   }
@@ -150,11 +176,14 @@ struct ppmd_Model {
     return RetVal;
   }
 
+  // Free all allocated memory
   void StopSubAllocator() {
     if (SubAllocatorSize)
       SubAllocatorSize = 0, delete[] HeapStart;
   }
 
+  // Defragmentation: Merge adjacent free blocks to reduce fragmentation
+  // Called when allocation fails or GlueCount reaches threshold
   void GlueFreeBlocks() {
     uint     i, k, sz;
     MEM_BLK  s0;
@@ -229,22 +258,25 @@ struct ppmd_Model {
     return RetVal;
   }
 
+  // Allocate NU memory units (NU * 12 bytes)
+  // Try free list first, then bump allocate, finally rare path (defragment)
   void *AllocUnits(uint NU) {
     uint indx = Units2Indx[NU - 1];
     if (BList[indx].avail())
-      return remove(&BList[indx]);
+      return remove(&BList[indx]);  // Fast path: reuse free block
     void *RetVal = LoUnit;
     LoUnit += U2B(Indx2Units[indx]);
     if (LoUnit <= HiUnit)
-      return RetVal;
+      return RetVal;  // Bump allocate from bottom
     LoUnit -= U2B(Indx2Units[indx]);
-    return AllocUnitsRare(indx);
+    return AllocUnitsRare(indx);  // Slow path: defragment and retry
   }
 
+  // Allocate a PPM_CONTEXT node (grows down from HiUnit)
   void *AllocContext() {
     if (HiUnit != LoUnit)
-      return HiUnit -= UNIT_SIZE;
-    return BList->avail() ? remove(BList) : AllocUnitsRare(0);
+      return HiUnit -= UNIT_SIZE;  // Fast path: bump allocate from top
+    return BList->avail() ? remove(BList) : AllocUnitsRare(0);  // Slow path
   }
 
   void FreeUnits(void *ptr, uint NU) {
@@ -417,10 +449,12 @@ struct ppmd_Model {
 
   struct PPM_CONTEXT;
 
+  // STATE: Statistics for one symbol in a context
+  // Contains the symbol value, its frequency count, and pointer to next-order context
   struct STATE {
-    byte Symbol;
-    byte Freq;
-    uint iSuccessor;
+    byte Symbol;        // Byte value (0-255)
+    byte Freq;          // Frequency count (how often seen in this context)
+    uint iSuccessor;    // Index to next-level context (higher order)
   };
 
   PPM_CONTEXT *getSucc(STATE *This) {
@@ -436,14 +470,18 @@ struct ppmd_Model {
     s2.iSuccessor = t2;
   }
 
+  // PPM_CONTEXT: A node in the context tree
+  // Stores statistics for all symbols seen in this specific context
+  // Optimization: When NumStats==0 (binary context), SummFreq stores STATE directly
   struct PPM_CONTEXT {
 
-    byte   NumStats;
-    byte   Flags;
-    word   SummFreq;
-    uint   iStats;
-    uint   iSuffix;
+    byte   NumStats;    // Number of different symbols (0 = binary optimization)
+    byte   Flags;       // Status: 0x04=rescaled, 0x08=has uppercase, 0x10=binary
+    word   SummFreq;    // Sum of all symbol frequencies (or STATE if NumStats==0)
+    uint   iStats;      // Index to STATE array
+    uint   iSuffix;     // Index to parent context (shorter/lower order)
 
+    // Binary context optimization: reuse SummFreq field to store single STATE
     STATE &oneState() const { return (STATE &)SummFreq; }
   };
 
@@ -476,10 +514,13 @@ struct ppmd_Model {
     ROUND       = 16
   };
 
+  // SEE2_CONTEXT: Secondary Escape Estimation
+  // Used to estimate escape probabilities more accurately
+  // Adapts based on context usage patterns
   struct SEE2_CONTEXT {
-    word Summ;
-    byte Shift;
-    byte Count;
+    word Summ;      // Sum of escape frequencies
+    byte Shift;     // Scaling shift value (adaptive)
+    byte Count;     // Update counter
 
     void init(uint InitVal) {
       Shift = PERIOD_BITS - 4;
@@ -487,11 +528,11 @@ struct ppmd_Model {
       Count = 7;
     }
 
-    uint getMean() { return Summ >> Shift; }
+    uint getMean() { return Summ >> Shift; }  // Get average escape probability
 
     void update() {
       if (--Count == 0)
-        setShift_rare();
+        setShift_rare();  // Adjust scaling after period
     }
 
     void setShift_rare() {
@@ -508,8 +549,10 @@ struct ppmd_Model {
     }
   };
 
-  int    NumMasked;
+  int    NumMasked;  // Number of symbols excluded (already tried in longer contexts)
 
+  // Frequency rescaling: Called when frequencies get too high
+  // Divides all frequencies by 2 to prevent overflow while maintaining ratios
   STATE *rescale(PPM_CONTEXT &q, int OrderFall, STATE *FoundState) {
     STATE  tmp;
     STATE *p;
@@ -589,6 +632,8 @@ struct ppmd_Model {
     }
   }
 
+  // Memory cutoff: Remove rarely-used contexts to free memory
+  // Called when memory is exhausted to make room for new contexts
   uint cutOff(PPM_CONTEXT &q, int Order, int MaxOrder) {
     int    i, tmp, EscFreq, Scale;
     STATE *p;
@@ -1327,18 +1372,23 @@ struct ppmd_Model {
   uint cxt;
   uint y;
 
+  // Initialize PPMD model with specified parameters
+  // MaxOrder: Maximum context length (typically 25)
+  // MMAX: Memory in MB (will be shifted: MMAX << 20 bytes)
+  // CutOff: Whether to use memory cutoff (1) or full reset (0)
+  // filesize: Expected file size (unused in this version)
   uint Init(uint MaxOrder, uint MMAX, uint CutOff, uint filesize) {
     _MaxOrder = MaxOrder;
     _CutOff   = CutOff;
     _MMAX     = MMAX;
     _filesize = filesize;
 
-    PPMD_STARTUP();
+    PPMD_STARTUP();  // Initialize lookup tables
 
-    if (!StartSubAllocator(_MMAX))
+    if (!StartSubAllocator(_MMAX))  // Allocate heap (MMAX << 20 bytes!)
       return 1;
 
-    StartModelRare();
+    StartModelRare();  // Create initial context tree
 
     cxt = 0;
     y   = 1;
@@ -1348,26 +1398,30 @@ struct ppmd_Model {
 
   ~ppmd_Model() { StopSubAllocator(); }
 
+  // Generate probability distribution for next byte
+  // Uses escape mechanism: tries longest context first, falls back to shorter ones
+  // Output: sqp[] array with probabilities for all 256 possible bytes
   void ppmd_PrepareByte(void) {
     SQ_ptr                  = 0;
     NumMasked               = 0;
     int          _OrderFall = OrderFall;
 
-    PPM_CONTEXT *MinContext = MaxContext;
+    PPM_CONTEXT *MinContext = MaxContext;  // Start with longest context
     if (MinContext->NumStats) {
-      processSymbol1_T(MinContext[0], 0);
+      processSymbol1_T(MinContext[0], 0);  // Multi-symbol context
     } else {
-      processBinSymbol_T(MinContext[0], 0);
+      processBinSymbol_T(MinContext[0], 0);  // Binary context optimization
     }
 
+    // Escape mechanism: try shorter and shorter contexts
     while (1) {
       do {
         if (!MinContext->iSuffix)
-          goto Break;
+          goto Break;  // Reached root context
         OrderFall++;
-        MinContext = suff(MinContext);
+        MinContext = suff(MinContext);  // Move to parent (shorter) context
       } while (MinContext->NumStats == NumMasked);
-      processSymbol2_T(MinContext[0], 0);
+      processSymbol2_T(MinContext[0], 0);  // Add escape predictions
     }
 
   Break:
@@ -1375,41 +1429,47 @@ struct ppmd_Model {
     NumMasked = 0;
     OrderFall = _OrderFall;
 
-    ConvertSQ();
+    ConvertSQ();  // Convert internal format to probability array
   }
 
+  // Update model after encoding/decoding a byte
+  // Increments frequency, creates new contexts if needed, handles memory exhaustion
   void ppmd_UpdateByte(uint c) {
     PPM_CONTEXT *MinContext = MaxContext;
+    // Find symbol in current context
     if (MinContext->NumStats) {
       processSymbol1<0>(MinContext[0], c);
     } else {
       processBinSymbol<0>(MinContext[0], c);
     }
 
+    // Search parent contexts if not found (escape)
     while (!FoundState) {
       do {
 
         OrderFall++;
-        MinContext = suff(MinContext);
+        MinContext = suff(MinContext);  // Move to shorter context
       } while (MinContext->NumStats == NumMasked);
       processSymbol2<0>(MinContext[0], c);
     }
 
+    // Update frequency and create new contexts
     PPM_CONTEXT *p;
     if ((OrderFall != 0) || ((byte *)getSucc(FoundState) < UnitsStart)) {
-      p = UpdateModel(MinContext);
+      p = UpdateModel(MinContext);  // Increment freq, maybe create new context
       if (p)
         MaxContext = p;
     } else {
-      p = MaxContext = getSucc(FoundState);
+      p = MaxContext = getSucc(FoundState);  // Move to existing next context
     }
 
+    // Handle memory exhaustion
     if (p == 0) {
       if (_CutOff) {
         printf("reset\n");
-        RestoreModelRare();
+        RestoreModelRare();  // Try to reclaim memory
       } else {
-        StartModelRare();
+        StartModelRare();  // Full model reset
       }
     }
   }
@@ -1419,27 +1479,38 @@ struct ppmd_Model {
 
 unsigned long long counter_ = 0;
 
+// PPMD public interface - wraps internal ppmd_Model
+// Constructor: Creates model with specified order and memory
+// Parameters:
+//   order: Maximum context length (typically 25)
+//   memory: Memory in MB (⚠️ will be left-shifted: memory << 20 bytes)
+//   bit_context: Current byte being processed
+//   vocab: Valid byte vocabulary
 PPMD::PPMD(int order, int memory, const unsigned int &bit_context,
            const std::vector<bool> &vocab)
     : ByteModel(vocab), byte_(bit_context),
       byte_map_(Eigen::VectorXi::Zero(256)) {
   ppmd_model_.reset(new ppmd_Model());
-  ppmd_model_->Init(order, memory, 1, 0);
+  ppmd_model_->Init(order, memory, 1, 0);  // memory << 20 bytes allocated!
 }
 
 PPMD::~PPMD() {}
 
+// Called after each byte to update model and generate new predictions
+// Output: probs_ contains probability distribution for next 256 possible bytes
 void PPMD::ByteUpdate() {
   ++counter_;
-  ppmd_model_->ppmd_UpdateByte(byte_);
-  ppmd_model_->ppmd_PrepareByte();
+  ppmd_model_->ppmd_UpdateByte(byte_);     // Update frequencies with actual byte
+  ppmd_model_->ppmd_PrepareByte();         // Generate predictions for next byte
+  
+  // Extract probabilities from internal format
   for (int i = 0; i < 256; ++i) {
-    probs_[i] = ppmd_model_->sqp[i];
+    probs_[i] = ppmd_model_->sqp[i];       // Get raw frequency
     if (probs_[i] < 1)
-      probs_[i] = 1;
+      probs_[i] = 1;                       // Minimum probability (avoid zero)
   }
   ByteModel::ByteUpdate();
-  probs_ /= probs_.sum();
+  probs_ /= probs_.sum();                  // Normalize to sum to 1.0
 }
 
 } // namespace PPMD
