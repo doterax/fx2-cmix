@@ -17,10 +17,18 @@ $(info native used)
 endif
 endif
 
+# Profile build flags (full optimization + debug symbols for profiling tools like VTune)
+CPPFLAGS_PROFILE_SLOW  := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
+CPPFLAGS_PROFILE_FAST  := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
+CPPFLAGS_PROFILE_SLOW  += -g -Os -fdata-sections -ffunction-sections
+CPPFLAGS_PROFILE_FAST  += -g -O3 -ffast-math -fdata-sections -ffunction-sections
+LFLAGS_PROFILE         := -m64 -Wl,--gc-sections -std=c++17 -g
+
+# Production build flags (full optimization, LTO)
 CPPFLAGS_PART-THAT-CAN-BE-SLOW    := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
-CPPFLAGS_PART-THAT-CAN-BE-SLOW    += -Os -fdata-sections -ffunction-sections
-CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -ffast-math -fdata-sections -ffunction-sections
-LFLAGS := -m64 -Wl,--gc-sections -std=c++17
+CPPFLAGS_PART-THAT-CAN-BE-SLOW    += -Os -fdata-sections -ffunction-sections -flto
+CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -ffast-math -fdata-sections -ffunction-sections -flto
+LFLAGS := -m64 -Wl,--gc-sections -std=c++17 -flto -fuse-linker-plugin
 
 OUT_DIR := out
 
@@ -138,8 +146,19 @@ slow: $(OUT_DIR)/preprocessor.o $(OUT_DIR)/dictionary.o
 
 fast: $(OUT_DIR)/decoder.o $(OUT_DIR)/encoder.o $(OUT_DIR)/random.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/bit-context.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/sparse.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/indirect.o $(OUT_DIR)/match.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/run-map.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sse.o $(OUT_DIR)/predictor.o $(OUT_DIR)/runner.o
 
-cmix: fast slow
+# Production build (default: full optimizations + LTO)
+cmix-prod: fast slow
 	$(CC) $(LFLAGS) $(OUT_DIR)/bit-context.o $(OUT_DIR)/random.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/decoder.o $(OUT_DIR)/dictionary.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/encoder.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/indirect.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/match.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/predictor.o $(OUT_DIR)/preprocessor.o $(OUT_DIR)/run-map.o $(OUT_DIR)/runner.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sparse.o $(OUT_DIR)/sse.o -o cmix
+
+# Profile build (full optimizations + debug symbols for VTune/perf/gprof)
+cmix-profile: CPPFLAGS_PART-THAT-CAN-BE-SLOW := $(CPPFLAGS_PROFILE_SLOW)
+cmix-profile: CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CPPFLAGS_PROFILE_FAST)
+cmix-profile: LFLAGS := $(LFLAGS_PROFILE)
+cmix-profile: clean fast slow
+	$(CC) $(LFLAGS_PROFILE) $(OUT_DIR)/bit-context.o $(OUT_DIR)/random.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/decoder.o $(OUT_DIR)/dictionary.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/encoder.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/indirect.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/match.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/predictor.o $(OUT_DIR)/preprocessor.o $(OUT_DIR)/run-map.o $(OUT_DIR)/runner.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sparse.o $(OUT_DIR)/sse.o -o cmix
+
+# Keep old 'cmix' target for backward compatibility (defaults to production)
+cmix: cmix-prod
 
 remap: src/readalike_prepr/article_remap.cpp
 	$(CC) src/readalike_prepr/article_remap.cpp -o remap
