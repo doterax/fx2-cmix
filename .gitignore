@@ -14,3 +14,7 @@ cmix.exe
 res.bin
 
 out/
+
+cmix.pdb
+
+cmix.ilk

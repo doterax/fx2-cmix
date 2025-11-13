@@ -550,11 +550,13 @@ int main(int argc, char **argv) {
     cat("dec1", output_path.c_str(), "dec2");
     cat("dec2", "header4archive.dat", "archive9");
 
-    // make the decompressor binary executable
+    // make the decompressor binary executable (Unix only)
+#ifndef _WIN32
     char mode[]   = "0777";
     char buf[100] = "archive9";
     int  i        = strtol(mode, 0, 8);
     chmod(buf, i);
+#endif
   }
 
   // Handle extract mode

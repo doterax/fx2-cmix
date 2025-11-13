@@ -9,6 +9,11 @@ typedef unsigned short U16;
 typedef unsigned int   U32;
 typedef uint64_t       U64;
 
+#ifdef _WIN32
+#define fseeko _fseeki64
+#define ftello _ftelli64
+#endif
+
 void setpos(FILE *file, U64 newpos) { fseeko(file, newpos, SEEK_SET); }
 U64 curpos(FILE *file) { return ftello(file); }
 U64 blockread(FILE *file,U8 *ptr, U64 count) {return fread(ptr,1,count,file);}
