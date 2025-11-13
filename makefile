@@ -2,7 +2,7 @@ CC = clang++
 
 ROOT_DIR:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CFLAGS_DEFINES) -DUPDATE_LIMIT=3000 -m64 -Wall -std=c++17 -fno-threadsafe-statics -Wunknown-pragmas -Wno-unused-variable -fno-threadsafe-statics -Wno-unused-but-set-variable -Wno-format -Ithird_party -DEIGEN_NO_DEBUG -DNDEBUG
+CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CFLAGS_DEFINES) -DUPDATE_LIMIT=3000 -m64 -Wall -std=c++17 -fno-threadsafe-statics -Wunknown-pragmas -Wno-unused-variable -fno-threadsafe-statics -Wno-unused-but-set-variable -Wno-format -Ithird_party -DEIGEN_NO_DEBUG -DEIGEN_FAST_MATH=1 -DEIGEN_UNROLLING_LIMIT=100 -DNDEBUG
 
 ifdef COREI7
 $(info COREI7 defined)
@@ -21,13 +21,13 @@ endif
 CPPFLAGS_PROFILE_SLOW  := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
 CPPFLAGS_PROFILE_FAST  := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
 CPPFLAGS_PROFILE_SLOW  += -g -Os -fdata-sections -ffunction-sections
-CPPFLAGS_PROFILE_FAST  += -g -O3 -ffast-math -fhonor-nans -fhonor-infinities -fdata-sections -ffunction-sections
+CPPFLAGS_PROFILE_FAST  += -g -O3 -ffast-math -fhonor-nans -fhonor-infinities -fvectorize -fslp-vectorize -funroll-loops -fdata-sections -ffunction-sections
 LFLAGS_PROFILE         := -m64 -std=c++17 -g
 
 # Production build flags (full optimization, LTO)
 CPPFLAGS_PART-THAT-CAN-BE-SLOW    := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
 CPPFLAGS_PART-THAT-CAN-BE-SLOW    += -Os -fdata-sections -ffunction-sections -flto
-CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -ffast-math -fhonor-nans -fhonor-infinities -fdata-sections -ffunction-sections -flto
+CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -ffast-math -fhonor-nans -fhonor-infinities -fvectorize -fslp-vectorize -funroll-loops -fdata-sections -ffunction-sections -flto
 LFLAGS := -m64 -std=c++17 -flto -fuse-ld=lld
 
 OUT_DIR := out
