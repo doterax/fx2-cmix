@@ -23,6 +23,10 @@
 
 #include "CLI/CLI11.hpp"
 
+#include "PPMDPredictor.hpp"
+
+enum class EPredictorType { FULL, PPMD_ONLY };
+
 namespace {
 const int kMinVocabFileSize = 10000;
 }
@@ -100,6 +104,26 @@ void ReadHeader(std::ifstream *is, unsigned long long *length,
         (*vocab)[i * 8 + j] = true;
     }
   }
+}
+
+std::unique_ptr<IPredictor>
+CreateFullPredictor(const std::vector<bool> &vocab) {
+  return std::make_unique<Predictor>(vocab);
+}
+
+std::unique_ptr<IPredictor>
+CreatePPMdPredictor(const std::vector<bool> &vocab) {
+  return std::make_unique<PPMDPredictor>(25, 14000);
+}
+
+std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
+                                            EPredictorType           type) {
+  if (type == EPredictorType::FULL) {
+    return CreateFullPredictor(vocab);
+  } else if (type == EPredictorType::PPMD_ONLY) {
+    return CreatePPMdPredictor(vocab);
+  }
+  throw std::invalid_argument("Unknown predictor type");
 }
 
 void ExtractVocab(unsigned long long num_bytes, std::ifstream *is,
@@ -201,7 +225,7 @@ bool Store(const std::string &input_path, const std::string &temp_path,
   return true;
 }
 
-bool RunCompression(bool enable_preprocess, const std::string &input_path,
+bool RunCompression( EPredictorType predictor_type, bool enable_preprocess, const std::string &input_path,
                     const std::string &temp_path,
                     const std::string &output_path, FILE *dictionary,
                     unsigned long long *input_bytes,
@@ -249,17 +273,17 @@ bool RunCompression(bool enable_preprocess, const std::string &input_path,
   }
 
   WriteHeader(temp_bytes, vocab, dictionary != NULL, &data_out);
-  Predictor p(vocab);
+  auto p = CreatePredictor(vocab, predictor_type);
   if (enable_preprocess)
-    preprocessor::Pretrain(&p, dictionary);
-  Compress(temp_bytes, &temp_in, &data_out, output_bytes, &p);
+    preprocessor::Pretrain(p.get(), dictionary);
+  Compress(temp_bytes, &temp_in, &data_out, output_bytes, p.get());
   temp_in.close();
   data_out.close();
   remove(temp_path.c_str());
   return true;
 }
 
-bool RunDecompression(const std::string &input_path,
+bool RunDecompression(EPredictorType predictor_type, const std::string &input_path,
                       const std::string &temp_path,
                       const std::string &output_path, FILE *dictionary,
                       unsigned long long *input_bytes,
@@ -297,15 +321,15 @@ bool RunDecompression(const std::string &input_path,
     fclose(data_out);
     return true;
   }
-  Predictor p(vocab);
+  auto p = CreatePredictor(vocab, predictor_type);
   if (dictionary_used)
-    preprocessor::Pretrain(&p, dictionary);
+    preprocessor::Pretrain(p.get(), dictionary);
 
   std::ofstream temp_out(temp_path, std::ios::out | std::ios::binary);
   if (!temp_out.is_open())
     return false;
 
-  Decompress(*output_bytes, &data_in, &temp_out, &p);
+  Decompress(*output_bytes, &data_in, &temp_out, p.get());
   data_in.close();
   temp_out.close();
 
@@ -328,10 +352,17 @@ bool RunDecompression(const std::string &input_path,
 int main(int argc, char **argv) {
   CLI::App app{"fx2-cmix - Advanced compression tool"};
 
+  EPredictorType predictor_type = EPredictorType::FULL;
+
   // Global options
   unsigned int seed = 27;
   app.add_option("--seed,-s", seed, "Random seed for initialization (0-65535)")
       ->check(CLI::Range(0u, 65535u));
+
+  std::string predictor_name = "full";
+  app.add_option("--predictor,-p", predictor_name, 
+                 "Predictor type: 'full' (default) or 'ppmd'")
+      ->check(CLI::IsMember({"full", "ppmd"}));
 
   // Subcommands
   std::string input_path;
@@ -435,6 +466,15 @@ int main(int argc, char **argv) {
   set_seed(seed);
   printf("Using random seed: %u\n", seed);
 
+  // Parse predictor type
+  if (predictor_name == "ppmd") {
+    predictor_type = EPredictorType::PPMD_ONLY;
+    printf("Using predictor: PPMD only\n");
+  } else {
+    predictor_type = EPredictorType::FULL;
+    printf("Using predictor: Full (all models)\n");
+  }
+
   clock_t start             = clock();
 
   bool    enable_preprocess = !no_preprocess_mode;
@@ -464,7 +504,7 @@ int main(int argc, char **argv) {
     output_path = ".input_decomp";
     dictionary  = fopen(".dict", "rb"); //_decomp
 
-    if (!RunDecompression(input_path, temp_path, output_path, dictionary,
+    if (!RunDecompression(predictor_type, input_path, temp_path, output_path, dictionary,
                           &input_bytes, &output_bytes)) {
       fprintf(stderr, "Error: Enwik9 decompression failed\n");
       return 1;
@@ -498,7 +538,7 @@ int main(int argc, char **argv) {
   // Handle compress/no-preprocess mode
   else if (compress_mode || no_preprocess_mode) {
     remove(".dict");
-    if (!RunCompression(enable_preprocess, input_path, temp_path, output_path,
+    if (!RunCompression(predictor_type, enable_preprocess, input_path, temp_path, output_path,
                         dictionary, &input_bytes, &output_bytes)) {
       fprintf(stderr, "Error: Compression failed\n");
       return 1;
@@ -529,7 +569,7 @@ int main(int argc, char **argv) {
     input_path             = ".ready4cmix";
     temp_path              = output_path + ".cmix.temp";
     dictionary             = fopen(".dict", "rb");
-    if (!RunCompression(enable_preprocess, input_path, temp_path, output_path,
+    if (!RunCompression(predictor_type, enable_preprocess, input_path, temp_path, output_path,
                         dictionary, &input_bytes, &output_bytes)) {
       fprintf(stderr, "Error: Enwik9 compression failed\n");
       return 1;
@@ -562,7 +602,7 @@ int main(int argc, char **argv) {
   // Handle extract mode
   else if (extract_mode) {
     dictionary = fopen(".dict", "rb");
-    if (!RunDecompression(input_path, temp_path, output_path, dictionary,
+    if (!RunDecompression(predictor_type, input_path, temp_path, output_path, dictionary,
                           &input_bytes, &output_bytes)) {
       fprintf(stderr, "Error: Extract operation failed\n");
       return 1;
@@ -572,7 +612,7 @@ int main(int argc, char **argv) {
 
   // Handle decompress mode
   else if (decompress_mode) {
-    if (!RunDecompression(input_path, temp_path, output_path, dictionary,
+    if (!RunDecompression(predictor_type, input_path, temp_path, output_path, dictionary,
                           &input_bytes, &output_bytes)) {
       fprintf(stderr, "Error: Decompression failed\n");
       return 1;
