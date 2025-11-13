@@ -1252,40 +1252,22 @@ struct ppmd_Model {
   qsym SQ[1024];
   uint SQ_ptr;
 
-  uint sqp[256];
+  uint sqp[256];  // Probability array for 256 possible bytes
 
-  uint trF[256];
-  uint trT[256];
-
+  // Convert SQ[] frequency array to cumulative probability distribution in sqp[]
   void ConvertSQ(void) {
-    uint i, c, j, b, freq, total, prob, cnum;
-    uint cum = 0xFFFFFF00;
-
-    cnum     = 256;
     memset(sqp, 0, sizeof(sqp));
-    memset(trF, 0, sizeof(trF));
-    memset(trT, 0, sizeof(trT));
-    // for( i=0; i<256; i++ ) sqp[i]=0,trF[i]=0,trT[i]=0;
-
-    for (i = 0; i < SQ_ptr; i++) {
-      c     = SQ[i].sym;
-      freq  = SQ[i].freq;
-      total = SQ[i].total;
-      prob  = qword(qword(cum) * freq) / total;
+    
+    uint cum = 0xFFFFFF00;
+    for (uint i = 0; i < SQ_ptr; i++) {
+      const qsym& sq = SQ[i];
+      const uint c = sq.sym;
+      const uint prob = (static_cast<qword>(cum) * sq.freq) / sq.total;
+      
       if (c < 256) {
         sqp[c] = prob + 1;
-        cnum--;
       } else {
         cum = prob;
-      }
-    }
-
-    for (c = 0; c < 256; c++) {
-      for (i = 8; i != 0; i--) {
-        j = (256 + c) >> i;
-        b = (c >> (i - 1)) & 1;
-        trF[j] += (b == 0) * sqp[c];
-        trT[j] += sqp[c];
       }
     }
   }
@@ -1305,66 +1287,66 @@ struct ppmd_Model {
   }
 
   void processSymbol1_T(PPM_CONTEXT &q, int) {
-    STATE *p     = getStats(&q);
+    STATE *p = getStats(&q);
+    const int cnum = q.NumStats;
+    const int total = q.SummFreq;
 
-    int    cnum  = q.NumStats;
-    int    low   = 0;
-    int    freq  = 0;
-    int    total = q.SummFreq;
-    int    i;
-
-    for (i = 0, low = 0; i <= cnum; i++) {
-      freq = p[i].Freq;
+    // Store all symbols and accumulate frequencies
+    int low = 0;
+    for (int i = 0; i <= cnum; i++) {
+      const int freq = p[i].Freq;
       SQ[SQ_ptr++].store(p[i].Symbol, freq, total);
       low += freq;
+      CharMask[p[i].Symbol] = EscCount;  // Mark as seen
     }
+
+    // Store escape symbol with remaining probability
+    SQ[SQ_ptr++].store(256, total - low, total);
+    NumMasked = cnum;
 
     if (q.iSuffix)
       PrefetchData(suff(&q));
-
-    NumMasked = cnum;
-    for (i = 0; i <= cnum; i++)
-      CharMask[p[i].Symbol] = EscCount;
-
-    SQ[SQ_ptr++].store(256, total - low, total);
   }
 
   void processSymbol2_T(PPM_CONTEXT &q, int) {
-    STATE        *p = getStats(&q);
+    STATE *p = getStats(&q);
+    const int cnum = q.NumStats;
 
-    int           c;
-    int           low;
-    int           see_freq;
-    int           cnum = q.NumStats;
-
-    SEE2_CONTEXT *psee2c;
+    // Calculate SEE2 context and escape frequency
+    int see_freq;
     if (cnum != 0xFF) {
-      psee2c = SEE2Cont[QTable[cnum + 3] - 4];
-      psee2c += (q.SummFreq > 10 * (cnum + 1));
-      psee2c += 2 * (2 * cnum < suff(&q)->NumStats + NumMasked) + q.Flags;
-      see_freq = psee2c->getMean() + 1;
-
+      const int base_idx = QTable[cnum + 3] - 4;
+      SEE2_CONTEXT *psee2c = SEE2Cont[base_idx];
+      const int adj1 = (q.SummFreq > 10 * (cnum + 1));
+      const int adj2 = 2 * (2 * cnum < suff(&q)->NumStats + NumMasked) + q.Flags;
+      see_freq = psee2c[adj1 + adj2].getMean() + 1;
     } else {
-      psee2c   = &DummySEE2Cont;
       see_freq = 1;
     }
 
-    int i;
-    for (i = 0, low = 0; i <= cnum; i++) {
-      c = p[i].Symbol;
-      if (CharMask[c] != EscCount)
-        low += p[i].Freq;
-    }
-    int Total = see_freq + low;
-
-    for (i = 0; i <= cnum; i++) {
-      c = p[i].Symbol;
-      if (CharMask[c] != EscCount) {
-        SQ[SQ_ptr++].store(c, p[i].Freq, Total);
-        CharMask[c] = EscCount;
+    // Process unmasked symbols (not seen in longer contexts)
+    int low = 0;
+    const uint curr_esc = EscCount;
+    qsym* sq_write = &SQ[SQ_ptr];
+    
+    for (int i = 0; i <= cnum; i++) {
+      const int c = p[i].Symbol;
+      if (CharMask[c] != curr_esc) {
+        const int freq = p[i].Freq;
+        low += freq;
+        sq_write->store(c, freq, 0);  // Total filled in fixup pass
+        sq_write++;
+        CharMask[c] = curr_esc;
       }
     }
-
+    
+    // Fixup pass: set Total for all stored symbols
+    const int Total = see_freq + low;
+    for (qsym* sq = &SQ[SQ_ptr]; sq < sq_write; sq++) {
+      sq->total = Total;
+    }
+    
+    SQ_ptr = sq_write - SQ;
     SQ[SQ_ptr++].store(256, see_freq, Total);
     NumMasked = cnum;
   }
