@@ -16,34 +16,15 @@
 #include "readalike_prepr/phda9_preprocess.h"
 #include "readalike_prepr/self_extract.h"
 
+#include "random.hpp"
 #include <algorithm>
 #include <stdio.h>
 #include <string.h>
-#include "random.hpp"
+
+#include "CLI/CLI11.hpp"
 
 namespace {
 const int kMinVocabFileSize = 10000;
-}
-
-int Help() {
-  printf("fx2-cmix\n");
-  printf("Compress:\n");
-  printf("    to compress enwik9: cmix -e enwik9 [output]\n");
-  printf(
-      "    to create a header for hutter prize: cmix -h comp_dict_size "
-      "comp_new_order_size decomp_input_size\n");
-  printf("    with dictionary:    cmix -c [dictionary] [input] [output]\n");
-  printf("    without dictionary: cmix -c [input] [output]\n");
-  printf("    no preprocessing:   cmix -n [input] [output]\n");
-  printf("    only preprocessing: cmix -s [dictionary] [input] [output]\n");
-  printf("                        cmix -s [input] [output]\n");
-  printf("Decompress:\n");
-  printf("    with dictionary:    cmix -d [dictionary] [input] [output]\n");
-  printf("    without dictionary: cmix -d [input] [output]\n");
-  printf("Options:\n");
-  printf("    -s<seed>: Random seed for initialization (default: 0, range: 0-65535)\n");
-  printf("              Example: cmix -s42 -c input.txt output.bin\n");
-  return -1;
 }
 
 size_t getFileSize(const std::string &path) {
@@ -129,7 +110,7 @@ void ExtractVocab(unsigned long long num_bytes, std::ifstream *is,
   }
   assert(num_bytes >= 2);
   Eigen::VectorXi byte_map = Eigen::VectorXi::Zero(256);
-  uint16_t           offset = 0;
+  uint16_t        offset   = 0;
   for (int i = 0; i < 256; ++i) {
     byte_map[i] = offset;
     if ((*vocab)[i])
@@ -345,56 +326,133 @@ bool RunDecompression(const std::string &input_path,
 }
 
 int main(int argc, char **argv) {
-  unsigned int seed = 27;  // Default seed
-  int arg_offset = 1;
-  
-  // Check for -s<seed> flag
-  if (argc > 1 && argv[1][0] == '-' && argv[1][1] == 's' && strlen(argv[1]) > 2) {
-    seed = atoi(&argv[1][2]);
-    if (seed > 65535) seed = 65535;  // Cap at 16-bit max
-    arg_offset = 2;  // Skip the -s<seed> argument
+  CLI::App app{"fx2-cmix - Advanced compression tool"};
+
+  // Global options
+  unsigned int seed = 27;
+  app.add_option("--seed,-s", seed, "Random seed for initialization (0-65535)")
+      ->check(CLI::Range(0u, 65535u));
+
+  // Subcommands
+  std::string input_path;
+  std::string output_path;
+  std::string dictionary_path;
+
+  bool        compress_mode          = false;
+  bool        decompress_mode        = false;
+  bool        store_mode             = false;
+  bool        no_preprocess_mode     = false;
+  bool        enwik9_compress_mode   = false;
+  bool        enwik9_decompress_mode = false;
+  bool        extract_mode           = false;
+
+  // Compress subcommand
+  auto *compress =
+      app.add_subcommand("compress", "Compress file with preprocessing");
+  compress->add_option("input", input_path, "Input file path")->required();
+  compress->add_option("output", output_path, "Output file path")->required();
+  compress->add_option("-d,--dict", dictionary_path, "Dictionary file");
+  compress->callback([&]() { compress_mode = true; });
+
+  // Decompress subcommand
+  auto *decompress = app.add_subcommand("decompress", "Decompress file");
+  decompress->add_option("input", input_path, "Input file path")->required();
+  decompress->add_option("output", output_path, "Output file path")->required();
+  decompress->add_option("-d,--dict", dictionary_path, "Dictionary file");
+  decompress->callback([&]() { decompress_mode = true; });
+
+  // No-preprocess subcommand
+  auto *no_preprocess =
+      app.add_subcommand("no-preprocess", "Compress without preprocessing");
+  no_preprocess->add_option("input", input_path, "Input file path")->required();
+  no_preprocess->add_option("output", output_path, "Output file path")
+      ->required();
+  no_preprocess->callback([&]() { no_preprocess_mode = true; });
+
+  // Store subcommand (only preprocessing)
+  auto *store = app.add_subcommand("store", "Only apply preprocessing");
+  store->add_option("input", input_path, "Input file path")->required();
+  store->add_option("output", output_path, "Output file path")->required();
+  store->add_option("-d,--dict", dictionary_path, "Dictionary file");
+  store->callback([&]() { store_mode = true; });
+
+  // Enwik9 compress subcommand
+  auto *enwik9_compress =
+      app.add_subcommand("enwik9-compress", "Compress enwik9 for Hutter Prize");
+  enwik9_compress->add_option("input", input_path, "Input enwik9 file")
+      ->required();
+  enwik9_compress->add_option("output", output_path, "Output archive")
+      ->required();
+  enwik9_compress->callback([&]() { enwik9_compress_mode = true; });
+
+  // Enwik9 decompress subcommand (no arguments needed)
+  auto *enwik9_decompress = app.add_subcommand(
+      "enwik9-decompress", "Decompress enwik9 Hutter Prize archive");
+  enwik9_decompress->callback([&]() { enwik9_decompress_mode = true; });
+
+  // Extract subcommand
+  auto *extract =
+      app.add_subcommand("extract", "Extract compressed file (internal use)");
+  extract->add_option("input", input_path, "Input file path")->required();
+  extract->add_option("output", output_path, "Output file path")->required();
+  extract->callback([&]() { extract_mode = true; });
+
+  // Header subcommand
+  int   dict_size      = 0;
+  int   new_order_size = 0;
+  int   decomp_size    = 0;
+  auto *header = app.add_subcommand("header", "Create header for Hutter Prize");
+  header->add_option("dict_size", dict_size, "Compressed dictionary size")
+      ->required();
+  header
+      ->add_option("new_order_size", new_order_size,
+                   "Compressed new order size")
+      ->required();
+  header->add_option("decomp_size", decomp_size, "Decompressed input size")
+      ->required();
+
+  // Allow no subcommand for enwik9-decompress mode (backward compatibility)
+  app.require_subcommand(0, 1);
+
+  // Parse arguments
+  CLI11_PARSE(app, argc, argv);
+
+  // Handle no-arguments case (enwik9-decompress)
+  if (app.get_subcommands().empty()) {
+    enwik9_decompress_mode = true;
   }
-  
-  if ((argc != 1) && (argc - arg_offset + 1 >= 1) && (argv[arg_offset][1] != 'h') &&
-      (argc - arg_offset + 1 < 4 || argc - arg_offset + 1 > 5 || 
-       strlen(argv[arg_offset]) != 2 || argv[arg_offset][0] != '-' ||
-       (argv[arg_offset][1] != 'c' && argv[arg_offset][1] != 'd' && 
-        argv[arg_offset][1] != 'x' && argv[arg_offset][1] != 's' && 
-        argv[arg_offset][1] != 'n' && argv[arg_offset][1] != 'e'))) {
-    return Help();
+
+  // Handle header subcommand
+  if (header->parsed()) {
+    HeaderInfo header_info;
+    header_info.dict_size              = dict_size;
+    header_info.new_article_order_size = new_order_size;
+    header_info.decomp_input_size      = decomp_size;
+    write("header.dat", header_info);
+    return 0;
   }
 
   set_seed(seed);
   printf("Using random seed: %u\n", seed);
 
-  clock_t     start             = clock();
+  clock_t start             = clock();
 
-  bool        enable_preprocess = true;
-  std::string input_path;
-  std::string output_path;
-  FILE       *dictionary = NULL;
+  bool    enable_preprocess = !no_preprocess_mode;
+  FILE   *dictionary        = nullptr;
 
-  if ((argc > arg_offset) && (argv[arg_offset][1] != 'h')) {
-    if (argv[arg_offset][1] == 'n')
-      enable_preprocess = false;
-    input_path  = argv[arg_offset + 1];
-    output_path = argv[arg_offset + 2];
-    if (argc == arg_offset + 4) {
-      if (argv[arg_offset][1] == 'n')
-        return Help();
-      dictionary = fopen(argv[arg_offset + 1], "rb");
-      if (!dictionary)
-        return Help();
-      input_path  = argv[arg_offset + 2];
-      output_path = argv[arg_offset + 3];
+  if (!dictionary_path.empty()) {
+    dictionary = fopen(dictionary_path.c_str(), "rb");
+    if (!dictionary) {
+      fprintf(stderr, "Error: Cannot open dictionary file: %s\n",
+              dictionary_path.c_str());
+      return 1;
     }
   }
 
   std::string        temp_path   = output_path + ".cmix.temp";
-
   unsigned long long input_bytes = 0, output_bytes = 0;
 
-  if (argc == 1) {
+  if (enwik9_decompress_mode) {
     // Decompress enwik9
     //  unpack a) header b) cmix dictionary, c) new order of articles, d) actual
     //  cmix binary
@@ -408,7 +466,8 @@ int main(int argc, char **argv) {
 
     if (!RunDecompression(input_path, temp_path, output_path, dictionary,
                           &input_bytes, &output_bytes)) {
-      return Help();
+      fprintf(stderr, "Error: Enwik9 decompression failed\n");
+      return 1;
     }
     std::cout << "Cmix decompression finished" << std::endl;
 
@@ -427,22 +486,27 @@ int main(int argc, char **argv) {
     goto print_end_message;
   }
 
-  if (argv[arg_offset][1] == 's') {
+  // Handle store mode
+  if (store_mode) {
     if (!Store(input_path, temp_path, output_path, dictionary, &input_bytes,
                &output_bytes)) {
-      return Help();
+      fprintf(stderr, "Error: Store operation failed\n");
+      return 1;
     }
-  } else if (argv[arg_offset][1] == 'c' || argv[arg_offset][1] == 'n') {
+  }
+
+  // Handle compress/no-preprocess mode
+  else if (compress_mode || no_preprocess_mode) {
     remove(".dict");
     if (!RunCompression(enable_preprocess, input_path, temp_path, output_path,
                         dictionary, &input_bytes, &output_bytes)) {
-      return Help();
+      fprintf(stderr, "Error: Compression failed\n");
+      return 1;
     }
-  } else if (argv[arg_offset][1] == 'e') {
-    // Compress enwik9
-    input_path  = argv[arg_offset + 1];
-    output_path = argv[arg_offset + 2]; // name of a compressor output
+  }
 
+  // Handle enwik9 compress mode
+  else if (enwik9_compress_mode) {
     // unpack a) cmix dictionary, b) new order of articles, c) actual cmix
     // binary
     selfextract_comp();
@@ -461,11 +525,14 @@ int main(int argc, char **argv) {
     cat("un1", ".coda", ".ready4cmix");
 
     // run compression
-    input_path = ".ready4cmix";
-    dictionary = fopen(".dict", "rb");
+    std::string orig_input = input_path;
+    input_path             = ".ready4cmix";
+    temp_path              = output_path + ".cmix.temp";
+    dictionary             = fopen(".dict", "rb");
     if (!RunCompression(enable_preprocess, input_path, temp_path, output_path,
                         dictionary, &input_bytes, &output_bytes)) {
-      return Help();
+      fprintf(stderr, "Error: Enwik9 compression failed\n");
+      return 1;
     }
 
     // construct a selfextracting decompressor binary
@@ -475,10 +542,10 @@ int main(int argc, char **argv) {
     // get the size of the output file
     size_t     output_size = getFileSize(output_path);
 
-    HeaderInfo header;
-    read("test.dat", header);
-    header.decomp_input_size = output_size;
-    write("header4archive.dat", header);
+    HeaderInfo header_info;
+    read("test.dat", header_info);
+    header_info.decomp_input_size = output_size;
+    write("header4archive.dat", header_info);
 
     cat("dec1", output_path.c_str(), "dec2");
     cat("dec2", "header4archive.dat", "archive9");
@@ -488,30 +555,25 @@ int main(int argc, char **argv) {
     char buf[100] = "archive9";
     int  i        = strtol(mode, 0, 8);
     chmod(buf, i);
+  }
 
-  } else if (argv[arg_offset][1] == 'h') {
-    if (argc < arg_offset + 4)
-      return Help();
-    HeaderInfo header;
-    header.dict_size              = atoi(argv[arg_offset + 1]);
-    header.new_article_order_size = atoi(argv[arg_offset + 2]);
-    header.decomp_input_size      = atoi(argv[arg_offset + 3]);
-    write("header.dat", header);
-    return 0;
-  } else if (argv[arg_offset][1] == 'x') {
-    // run compression
-    input_path  = argv[arg_offset + 1];
-    output_path = argv[arg_offset + 2];
-    dictionary  = fopen(".dict", "rb");
+  // Handle extract mode
+  else if (extract_mode) {
+    dictionary = fopen(".dict", "rb");
     if (!RunDecompression(input_path, temp_path, output_path, dictionary,
                           &input_bytes, &output_bytes)) {
-      return Help();
+      fprintf(stderr, "Error: Extract operation failed\n");
+      return 1;
     }
     goto print_end_message;
-  } else {
+  }
+
+  // Handle decompress mode
+  else if (decompress_mode) {
     if (!RunDecompression(input_path, temp_path, output_path, dictionary,
                           &input_bytes, &output_bytes)) {
-      return Help();
+      fprintf(stderr, "Error: Decompression failed\n");
+      return 1;
     }
   }
 
@@ -519,7 +581,7 @@ print_end_message:
   double seconds             = ((double)clock() - start) / CLOCKS_PER_SEC;
   double bits_per_second     = (8.0 * (double)input_bytes) / (seconds);
   double nanoseconds_per_bit = (seconds * 1e9) / (8.0 * (double)input_bytes);
-  double compression_ratio   = 100.0 * (double)output_bytes / (double)input_bytes;
+  double compression_ratio = 100.0 * (double)output_bytes / (double)input_bytes;
   printf(
       "\r%lld bytes -> %lld bytes in %1.2f s.\nSpeed: %1.2f bits/s (%1.2f "
       "bytes/s). %1.2f ns/bit\nCompression ratio: %1.5f%\n",
