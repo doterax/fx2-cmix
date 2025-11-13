@@ -173,6 +173,10 @@ $(OUT_DIR)/byte-model-debug.o: src/models/byte-model.cpp src/models/byte-model.h
 test-ppmd: $(OUT_DIR)/ppmd-debug.o $(OUT_DIR)/byte-model-debug.o
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/test_ppmd.cpp $(OUT_DIR)/ppmd-debug.o $(OUT_DIR)/byte-model-debug.o -o test-ppmd.exe
 
+# PPMD memory diagnostic test (direct ppmd_Model testing - includes ppmd.cpp directly)
+test-ppmd-mem: $(OUT_DIR)/byte-model-debug.o
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/test_ppmd_mem.cpp $(OUT_DIR)/byte-model-debug.o -o test-ppmd-mem.exe
+
 $(OUT_DIR)/byte-model.o: src/models/byte-model.cpp src/models/byte-model.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/models/byte-model.cpp -o $(OUT_DIR)/byte-model.o
 

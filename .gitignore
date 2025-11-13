@@ -24,3 +24,7 @@ temp_seed_test/
 test-ppmd.exe
 
 test-ppmd.pdb
+
+*.exe
+
+*.pdb
