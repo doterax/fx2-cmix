@@ -43,7 +43,7 @@ def test_seed(seed: int, cmix_path: str, input_file: str, temp_dir: str) -> Comp
     
     try:
         # Run compression with specific seed
-        cmd = [cmix_path, f"-s{seed}", "-c", input_file, output_file]
+        cmd = [cmix_path, "--seed", str(seed), "no-preprocess", input_file, output_file]
         
         start_time = time.time()
         result = subprocess.run(
