@@ -163,10 +163,24 @@ cmix: cmix-prod
 remap: src/readalike_prepr/article_remap.cpp
 	$(CC) src/readalike_prepr/article_remap.cpp -o remap.exe
 
+# PPMD isolated performance test (with debug symbols)
+$(OUT_DIR)/ppmd-debug.o: src/models/ppmd.cpp src/models/ppmd.h | $(OUT_DIR)
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -c src/models/ppmd.cpp -o $(OUT_DIR)/ppmd-debug.o
+
+$(OUT_DIR)/byte-model-debug.o: src/models/byte-model.cpp src/models/byte-model.h | $(OUT_DIR)
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -c src/models/byte-model.cpp -o $(OUT_DIR)/byte-model-debug.o
+
+test-ppmd: $(OUT_DIR)/ppmd-debug.o $(OUT_DIR)/byte-model-debug.o
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/test_ppmd.cpp $(OUT_DIR)/ppmd-debug.o $(OUT_DIR)/byte-model-debug.o -o test-ppmd.exe
+
+$(OUT_DIR)/byte-model.o: src/models/byte-model.cpp src/models/byte-model.h | $(OUT_DIR)
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/models/byte-model.cpp -o $(OUT_DIR)/byte-model.o
+
 clean:
 	rm -rf $(OUT_DIR)
 	rm -f cmix.exe
 	rm -f remap.exe
+	rm -f test-ppmd.exe
 
 all: cmix remap
 
