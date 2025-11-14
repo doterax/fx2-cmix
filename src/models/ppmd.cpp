@@ -3,10 +3,12 @@
 // This file is adapted from mod_ppmd_v2: http://encode.su/threads/2515-mod_ppmd
 //
 // PPMD (Prediction by Partial Matching, variant D) is a sophisticated
-// statistical compression algorithm that predicts the next byte based on context.
+// statistical compression algorithm that predicts the next byte based on
+// context.
 //
 // Key components:
-// 1. Custom Memory Allocator - Efficiently manages millions of small allocations
+// 1. Custom Memory Allocator - Efficiently manages millions of small
+// allocations
 // 2. Context Tree - Stores symbol statistics up to order 25
 // 3. Prediction Engine - Generates probabilities with escape mechanism
 // 4. Adaptive Learning - Updates frequencies as data is processed
@@ -64,11 +66,11 @@ struct ppmd_Model {
     N_INDEXES = N1 + N2 + N3 + N4
   };
 
-  byte *HeapStart;  // Start of allocated heap memory
+  byte *HeapStart; // Start of allocated heap memory
 
   // Pointer compression: Convert pointers to 32-bit indices to save memory
   // On 64-bit systems, this saves 4 bytes per pointer (50% reduction)
-  uint  Ptr2Indx(void *p) {
+  uint Ptr2Indx(void *p) {
     qword addr = ((byte *)p) - HeapStart;
     uint  lim  = (UnitsStart - HeapStart);
     uint  indx = (addr >= lim) ? (addr - lim) / UNIT_SIZE + lim : addr;
@@ -140,15 +142,15 @@ struct ppmd_Model {
   byte             *HiUnit;
   byte             *AuxUnit;
 
-  uint              U2B(uint NU) { return 8 * NU + 4 * NU; }  // Units to Bytes: NU * 12
+  uint U2B(uint NU) { return 8 * NU + 4 * NU; } // Units to Bytes: NU * 12
 
   // ⚠️ CRITICAL: Memory allocation function
-  // SASize is in MEGABYTES and gets left-shifted by 20 bits (multiplied by 1,048,576)
-  // Example: SASize=1024 → 1024 << 20 = 1,073,741,824 bytes = 1 GB
+  // SASize is in MEGABYTES and gets left-shifted by 20 bits (multiplied by
+  // 1,048,576) Example: SASize=1024 → 1024 << 20 = 1,073,741,824 bytes = 1 GB
   // Bug history: Was set to 14000 (13.67 GB!), fixed to 1024 (1 GB)
-  int               StartSubAllocator(qword SASize) {
-    qword t   = SASize << 20U;  // Convert MB to bytes: SASize * 1,048,576
-    HeapStart = new byte[t];    // Allocate main heap
+  int StartSubAllocator(qword SASize) {
+    qword t   = SASize << 20U; // Convert MB to bytes: SASize * 1,048,576
+    HeapStart = new byte[t];   // Allocate main heap
 
     if (HeapStart == NULL)
       return 0;
@@ -157,11 +159,13 @@ struct ppmd_Model {
   }
 
   // Initialize memory layout:
-  // HeapStart -> pText (grows up) -> Free Lists -> UnitsStart <- LoUnit/HiUnit <- (grows down)
+  // HeapStart -> pText (grows up) -> Free Lists -> UnitsStart <- LoUnit/HiUnit
+  // <- (grows down)
   void InitSubAllocator() {
-    memset(BList, 0, sizeof(BList));  // Clear free list buckets
+    memset(BList, 0, sizeof(BList)); // Clear free list buckets
     HiUnit     = (pText = HeapStart) + SubAllocatorSize;
-    qword Diff = SubAllocatorSize / 8 / UNIT_SIZE * 7 * UNIT_SIZE;  // 7/8 of heap for contexts
+    qword Diff = SubAllocatorSize / 8 / UNIT_SIZE * 7 *
+                 UNIT_SIZE; // 7/8 of heap for contexts
     LoUnit = UnitsStart = HiUnit - Diff;
     GlueCount = GlueCount1 = 0;
   }
@@ -263,20 +267,20 @@ struct ppmd_Model {
   void *AllocUnits(uint NU) {
     uint indx = Units2Indx[NU - 1];
     if (BList[indx].avail())
-      return remove(&BList[indx]);  // Fast path: reuse free block
+      return remove(&BList[indx]); // Fast path: reuse free block
     void *RetVal = LoUnit;
     LoUnit += U2B(Indx2Units[indx]);
     if (LoUnit <= HiUnit)
-      return RetVal;  // Bump allocate from bottom
+      return RetVal; // Bump allocate from bottom
     LoUnit -= U2B(Indx2Units[indx]);
-    return AllocUnitsRare(indx);  // Slow path: defragment and retry
+    return AllocUnitsRare(indx); // Slow path: defragment and retry
   }
 
   // Allocate a PPM_CONTEXT node (grows down from HiUnit)
   void *AllocContext() {
     if (HiUnit != LoUnit)
-      return HiUnit -= UNIT_SIZE;  // Fast path: bump allocate from top
-    return BList->avail() ? remove(BList) : AllocUnitsRare(0);  // Slow path
+      return HiUnit -= UNIT_SIZE; // Fast path: bump allocate from top
+    return BList->avail() ? remove(BList) : AllocUnitsRare(0); // Slow path
   }
 
   void FreeUnits(void *ptr, uint NU) {
@@ -450,11 +454,12 @@ struct ppmd_Model {
   struct PPM_CONTEXT;
 
   // STATE: Statistics for one symbol in a context
-  // Contains the symbol value, its frequency count, and pointer to next-order context
+  // Contains the symbol value, its frequency count, and pointer to next-order
+  // context
   struct STATE {
-    byte Symbol;        // Byte value (0-255)
-    byte Freq;          // Frequency count (how often seen in this context)
-    uint iSuccessor;    // Index to next-level context (higher order)
+    byte Symbol;     // Byte value (0-255)
+    byte Freq;       // Frequency count (how often seen in this context)
+    uint iSuccessor; // Index to next-level context (higher order)
   };
 
   PPM_CONTEXT *getSucc(STATE *This) {
@@ -472,14 +477,15 @@ struct ppmd_Model {
 
   // PPM_CONTEXT: A node in the context tree
   // Stores statistics for all symbols seen in this specific context
-  // Optimization: When NumStats==0 (binary context), SummFreq stores STATE directly
+  // Optimization: When NumStats==0 (binary context), SummFreq stores STATE
+  // directly
   struct PPM_CONTEXT {
 
-    byte   NumStats;    // Number of different symbols (0 = binary optimization)
-    byte   Flags;       // Status: 0x04=rescaled, 0x08=has uppercase, 0x10=binary
-    word   SummFreq;    // Sum of all symbol frequencies (or STATE if NumStats==0)
-    uint   iStats;      // Index to STATE array
-    uint   iSuffix;     // Index to parent context (shorter/lower order)
+    byte NumStats; // Number of different symbols (0 = binary optimization)
+    byte Flags;    // Status: 0x04=rescaled, 0x08=has uppercase, 0x10=binary
+    word SummFreq; // Sum of all symbol frequencies (or STATE if NumStats==0)
+    uint iStats;   // Index to STATE array
+    uint iSuffix;  // Index to parent context (shorter/lower order)
 
     // Binary context optimization: reuse SummFreq field to store single STATE
     STATE &oneState() const { return (STATE &)SummFreq; }
@@ -518,9 +524,9 @@ struct ppmd_Model {
   // Used to estimate escape probabilities more accurately
   // Adapts based on context usage patterns
   struct SEE2_CONTEXT {
-    word Summ;      // Sum of escape frequencies
-    byte Shift;     // Scaling shift value (adaptive)
-    byte Count;     // Update counter
+    word Summ;  // Sum of escape frequencies
+    byte Shift; // Scaling shift value (adaptive)
+    byte Count; // Update counter
 
     void init(uint InitVal) {
       Shift = PERIOD_BITS - 4;
@@ -528,11 +534,11 @@ struct ppmd_Model {
       Count = 7;
     }
 
-    uint getMean() { return Summ >> Shift; }  // Get average escape probability
+    uint getMean() { return Summ >> Shift; } // Get average escape probability
 
     void update() {
       if (--Count == 0)
-        setShift_rare();  // Adjust scaling after period
+        setShift_rare(); // Adjust scaling after period
     }
 
     void setShift_rare() {
@@ -549,7 +555,8 @@ struct ppmd_Model {
     }
   };
 
-  int    NumMasked;  // Number of symbols excluded (already tried in longer contexts)
+  int NumMasked; // Number of symbols excluded (already tried in longer
+                 // contexts)
 
   // Frequency rescaling: Called when frequencies get too high
   // Divides all frequencies by 2 to prevent overflow while maintaining ratios
@@ -623,13 +630,18 @@ struct ppmd_Model {
     return FoundState;
   }
 
+  int auxCutoffDepth = 0;
   void AuxCutOff(STATE *p, int Order, int MaxOrder) {
+    auxCutoffDepth++;
+    printf("AuxCutOff+: Order=%d, MaxOrder=%d Depth=%d\n", Order, MaxOrder, auxCutoffDepth);
     if (Order < MaxOrder) {
       PrefetchData(getSucc(p));
       p->iSuccessor = cutOff(getSucc(p)[0], Order + 1, MaxOrder);
     } else {
       p->iSuccessor = 0;
     }
+    printf("AuxCutOff-: Order=%d, MaxOrder=%d Depth=%d\n", Order, MaxOrder, auxCutoffDepth);
+    auxCutoffDepth--;
   }
 
   // Memory cutoff: Remove rarely-used contexts to free memory
@@ -639,38 +651,57 @@ struct ppmd_Model {
     STATE *p;
     STATE *p0;
 
+    printf("cutOff: Entered at Order=%d\n", Order);
+
     if (q.NumStats == 0) {
+      printf("cutOff: NumStats=0 at Order=%d\n", Order);
 
       int flag = 1;
       p        = &q.oneState();
       if ((byte *)getSucc(p) >= UnitsStart) {
+        printf("cutOff: Recursing into successor NS=0 at Order=%d\n", Order);
         AuxCutOff(p, Order, MaxOrder);
         if (p->iSuccessor || Order < O_BOUND)
           flag = 0;
       }
       if (flag) {
+        printf("cutOff: Freeing binary context at Order=%d\n", Order);
         FreeUnit(&q);
         return 0;
       }
 
+
     } else {
+      printf("cutOff: NumStats=%d at Order=%d\n", q.NumStats, Order);
 
       tmp      = (q.NumStats + 2) >> 1;
       p0       = (STATE *)MoveUnitsUp(getStats(&q), tmp);
       q.iStats = Ptr2Indx(p0);
 
+      // suspicious code - modifying loop variable inside loop
+      // possibility that p is beyond bounds
       for (i = q.NumStats, p = &p0[i]; p >= p0; p--) {
-        if ((byte *)getSucc(p) < UnitsStart) {
+        auto succ = (byte *)getSucc(p);
+
+        if(p > (STATE *)HiUnit || p < (STATE *)UnitsStart) {
+          printf("cutOff: WARNING: STATE pointer out of bounds at Order=%d\n", Order);
+        }
+
+        if (succ < UnitsStart) {
+          printf("cutOff: Freeing successor NS=%d at Order=%d\n", q.NumStats, Order);
           p[0].iSuccessor = 0;
           SWAP(p[0], p0[i--]);
-        } else
+        } else {
+          printf("cutOff: Recursing into successor NS=%d at Order=%d\n", q.NumStats, Order);
           AuxCutOff(p, Order, MaxOrder);
+        }
       }
 
       if (i != q.NumStats && Order > 0) {
         q.NumStats = i;
         p          = p0;
         if (i < 0) {
+          printf("cutOff: Freeing all stats at Order=%d\n", Order);
           FreeUnits(p, tmp);
           FreeUnit(&q);
           return 0;
@@ -681,7 +712,9 @@ struct ppmd_Model {
           q.oneState() = p[0];
           FreeUnits(p, tmp);
         } else {
+          printf("cutOff: ShrinkUnits+ at Order=%d to %d stats\n", Order, i + 1);
           p        = (STATE *)ShrinkUnits(p0, tmp, (i + 2) >> 1);
+          printf("cutOff: ShrinkUnits- at Order=%d\n", Order);
           q.iStats = Ptr2Indx(p);
           Scale    = (q.SummFreq > 16 * i);
           q.Flags  = (q.Flags & (0x10 + 0x04 * Scale));
@@ -773,6 +806,7 @@ struct ppmd_Model {
   }
 
   void RestoreModelRare(void) {
+    printf("RestoreModelRare+\n");
     STATE *p;
     pText           = HeapStart;
     PPM_CONTEXT *pc = saved_pc;
@@ -798,26 +832,41 @@ struct ppmd_Model {
 
     AuxUnit = UnitsStart;
 
+    printf("RestoreModelRare: Exp+\n");
     ExpandTextArea();
+    printf("RestoreModelRare: Exp-\n");
 
     do {
+      printf("RestoreModelRare: Cut+ memUsed: %zu\n", GetUsedMemory());
+      printf("RestoreModelRare: prep text, MaxContext: %p\n", MaxContext);
       PrepareTextArea();
+      printf("RestoreModelRare: cutoff: _MaxOrder=%d\n", _MaxOrder);
       cutOff(MaxContext[0], 0, _MaxOrder);
+      printf("RestoreModelRare: Cut text expand\n");
       ExpandTextArea();
+      printf("RestoreModelRare: Cut- memUsed: %zu\n", GetUsedMemory());
     } while (GetUsedMemory() > 3 * (SubAllocatorSize >> 2));
 
     GlueCount = GlueCount1 = 0;
     OrderFall              = _MaxOrder;
+    printf("RestoreModelRare-\n");
   }
 
   PPM_CONTEXT *saved_pc;
 
   PPM_CONTEXT *UpdateModel(PPM_CONTEXT *MinContext) {
-    byte         Flag, FSymbol;
-    uint         ns1, ns, cf, sf, s0, FFreq;
-    uint         iSuccessor, iFSuccessor;
-    PPM_CONTEXT *pc = NULL;
-    STATE       *p  = NULL;
+    byte         Flag;        // context flags
+    byte         FSymbol;     // found symbol
+    uint         ns1;         // number of statistics in the successor context
+    uint         ns;          // number of statistics in the current context
+    uint         cf;          // comparison factor
+    uint         sf;          // scaling factor
+    uint         s0;          // sum frequency minus found frequency
+    uint         FFreq;       // found frequency
+    uint         iSuccessor;  // index of successor context
+    uint         iFSuccessor; // index of found successor context
+    PPM_CONTEXT *pc = NULL;   // context pointer
+    STATE       *p  = NULL;   // state pointer
 
     FSymbol         = FoundState->Symbol;
     FFreq           = FoundState->Freq;
@@ -864,12 +913,14 @@ struct ppmd_Model {
     };
 
     if (iFSuccessor) {
-      if ((byte *)Indx2Ptr(iFSuccessor) < UnitsStart)
+      if ((byte *)Indx2Ptr(iFSuccessor) < UnitsStart) {
         iFSuccessor = CreateSuccessors(0, p, MinContext);
-      else
+      } else {
         PrefetchData(Indx2Ptr(iFSuccessor));
-    } else
+      }
+    } else {
       iFSuccessor = ReduceOrder(p, MinContext);
+    }
 
     if (!iFSuccessor) {
       saved_pc = pc;
@@ -900,7 +951,6 @@ struct ppmd_Model {
 
         pc[0].SummFreq += QTable[ns + 4] >> 3;
       } else {
-
         p = (STATE *)AllocUnits(1);
         if (!p) {
           saved_pc = pc;
@@ -927,7 +977,17 @@ struct ppmd_Model {
         pc[0].SummFreq += cf;
       }
 
-      p               = getStats(pc) + (++pc[0].NumStats);
+      // this is very suspicious
+      // after this point, p seems to be invalid when we are near memory limit
+      p = getStats(pc) + (++pc[0].NumStats);
+
+      // we should check p validity here
+      if ((byte *)p >= HiUnit) {
+        printf("UpdateModel: memory limit reached\n");
+        saved_pc = pc;
+        return 0;
+      }
+
       p[0].iSuccessor = iSuccessor;
       p[0].Symbol     = FSymbol;
       p[0].Freq       = cf;
@@ -1252,18 +1312,19 @@ struct ppmd_Model {
   qsym SQ[1024];
   uint SQ_ptr;
 
-  uint sqp[256];  // Probability array for 256 possible bytes
+  uint sqp[256]; // Probability array for 256 possible bytes
 
-  // Convert SQ[] frequency array to cumulative probability distribution in sqp[]
+  // Convert SQ[] frequency array to cumulative probability distribution in
+  // sqp[]
   void ConvertSQ(void) {
     memset(sqp, 0, sizeof(sqp));
-    
+
     uint cum = 0xFFFFFF00;
     for (uint i = 0; i < SQ_ptr; i++) {
-      const qsym& sq = SQ[i];
-      const uint c = sq.sym;
-      const uint prob = (static_cast<qword>(cum) * sq.freq) / sq.total;
-      
+      const qsym &sq   = SQ[i];
+      const uint  c    = sq.sym;
+      const uint  prob = (static_cast<qword>(cum) * sq.freq) / sq.total;
+
       if (c < 256) {
         sqp[c] = prob + 1;
       } else {
@@ -1287,8 +1348,8 @@ struct ppmd_Model {
   }
 
   void processSymbol1_T(PPM_CONTEXT &q, int) {
-    STATE *p = getStats(&q);
-    const int cnum = q.NumStats;
+    STATE    *p     = getStats(&q);
+    const int cnum  = q.NumStats;
     const int total = q.SummFreq;
 
     // Store all symbols and accumulate frequencies
@@ -1297,7 +1358,7 @@ struct ppmd_Model {
       const int freq = p[i].Freq;
       SQ[SQ_ptr++].store(p[i].Symbol, freq, total);
       low += freq;
-      CharMask[p[i].Symbol] = EscCount;  // Mark as seen
+      CharMask[p[i].Symbol] = EscCount; // Mark as seen
     }
 
     // Store escape symbol with remaining probability
@@ -1309,43 +1370,44 @@ struct ppmd_Model {
   }
 
   void processSymbol2_T(PPM_CONTEXT &q, int) {
-    STATE *p = getStats(&q);
+    STATE    *p    = getStats(&q);
     const int cnum = q.NumStats;
 
     // Calculate SEE2 context and escape frequency
     int see_freq;
     if (cnum != 0xFF) {
-      const int base_idx = QTable[cnum + 3] - 4;
-      SEE2_CONTEXT *psee2c = SEE2Cont[base_idx];
-      const int adj1 = (q.SummFreq > 10 * (cnum + 1));
-      const int adj2 = 2 * (2 * cnum < suff(&q)->NumStats + NumMasked) + q.Flags;
+      const int     base_idx = QTable[cnum + 3] - 4;
+      SEE2_CONTEXT *psee2c   = SEE2Cont[base_idx];
+      const int     adj1     = (q.SummFreq > 10 * (cnum + 1));
+      const int     adj2 =
+          2 * (2 * cnum < suff(&q)->NumStats + NumMasked) + q.Flags;
       see_freq = psee2c[adj1 + adj2].getMean() + 1;
     } else {
       see_freq = 1;
     }
 
     // Process unmasked symbols (not seen in longer contexts)
-    int low = 0;
+    int        low      = 0;
     const uint curr_esc = EscCount;
-    qsym* sq_write = &SQ[SQ_ptr];
-    
+    qsym      *sq_write = &SQ[SQ_ptr];
+
     for (int i = 0; i <= cnum; i++) {
       const int c = p[i].Symbol;
       if (CharMask[c] != curr_esc) {
         const int freq = p[i].Freq;
         low += freq;
-        sq_write->store(c, freq, 0);  // Total filled in fixup pass
+        sq_write->store(c, freq, 0); // Total filled in fixup pass
         sq_write++;
         CharMask[c] = curr_esc;
       }
     }
-    
+
     // Fixup pass: set Total for all stored symbols
     const int Total = see_freq + low;
-    for (qsym* sq = &SQ[SQ_ptr]; sq < sq_write; sq++) {
+    for (qsym *sq = &SQ[SQ_ptr]; sq < sq_write; sq++) {
       sq->total = Total;
     }
-    
+
     SQ_ptr = sq_write - SQ;
     SQ[SQ_ptr++].store(256, see_freq, Total);
     NumMasked = cnum;
@@ -1365,12 +1427,12 @@ struct ppmd_Model {
     _MMAX     = MMAX;
     _filesize = filesize;
 
-    PPMD_STARTUP();  // Initialize lookup tables
+    PPMD_STARTUP(); // Initialize lookup tables
 
-    if (!StartSubAllocator(_MMAX))  // Allocate heap (MMAX << 20 bytes!)
+    if (!StartSubAllocator(_MMAX)) // Allocate heap (MMAX << 20 bytes!)
       return 1;
 
-    StartModelRare();  // Create initial context tree
+    StartModelRare(); // Create initial context tree
 
     cxt = 0;
     y   = 1;
@@ -1381,29 +1443,29 @@ struct ppmd_Model {
   ~ppmd_Model() { StopSubAllocator(); }
 
   // Generate probability distribution for next byte
-  // Uses escape mechanism: tries longest context first, falls back to shorter ones
-  // Output: sqp[] array with probabilities for all 256 possible bytes
+  // Uses escape mechanism: tries longest context first, falls back to shorter
+  // ones Output: sqp[] array with probabilities for all 256 possible bytes
   void ppmd_PrepareByte(void) {
     SQ_ptr                  = 0;
     NumMasked               = 0;
     int          _OrderFall = OrderFall;
 
-    PPM_CONTEXT *MinContext = MaxContext;  // Start with longest context
+    PPM_CONTEXT *MinContext = MaxContext; // Start with longest context
     if (MinContext->NumStats) {
-      processSymbol1_T(MinContext[0], 0);  // Multi-symbol context
+      processSymbol1_T(MinContext[0], 0); // Multi-symbol context
     } else {
-      processBinSymbol_T(MinContext[0], 0);  // Binary context optimization
+      processBinSymbol_T(MinContext[0], 0); // Binary context optimization
     }
 
     // Escape mechanism: try shorter and shorter contexts
     while (1) {
       do {
         if (!MinContext->iSuffix)
-          goto Break;  // Reached root context
+          goto Break; // Reached root context
         OrderFall++;
-        MinContext = suff(MinContext);  // Move to parent (shorter) context
+        MinContext = suff(MinContext); // Move to parent (shorter) context
       } while (MinContext->NumStats == NumMasked);
-      processSymbol2_T(MinContext[0], 0);  // Add escape predictions
+      processSymbol2_T(MinContext[0], 0); // Add escape predictions
     }
 
   Break:
@@ -1411,11 +1473,12 @@ struct ppmd_Model {
     NumMasked = 0;
     OrderFall = _OrderFall;
 
-    ConvertSQ();  // Convert internal format to probability array
+    ConvertSQ(); // Convert internal format to probability array
   }
 
   // Update model after encoding/decoding a byte
-  // Increments frequency, creates new contexts if needed, handles memory exhaustion
+  // Increments frequency, creates new contexts if needed, handles memory
+  // exhaustion
   void ppmd_UpdateByte(uint c) {
     PPM_CONTEXT *MinContext = MaxContext;
     // Find symbol in current context
@@ -1430,7 +1493,7 @@ struct ppmd_Model {
       do {
 
         OrderFall++;
-        MinContext = suff(MinContext);  // Move to shorter context
+        MinContext = suff(MinContext); // Move to shorter context
       } while (MinContext->NumStats == NumMasked);
       processSymbol2<0>(MinContext[0], c);
     }
@@ -1438,20 +1501,20 @@ struct ppmd_Model {
     // Update frequency and create new contexts
     PPM_CONTEXT *p;
     if ((OrderFall != 0) || ((byte *)getSucc(FoundState) < UnitsStart)) {
-      p = UpdateModel(MinContext);  // Increment freq, maybe create new context
+      p = UpdateModel(MinContext); // Increment freq, maybe create new context
       if (p)
         MaxContext = p;
     } else {
-      p = MaxContext = getSucc(FoundState);  // Move to existing next context
+      p = MaxContext = getSucc(FoundState); // Move to existing next context
     }
 
     // Handle memory exhaustion
     if (p == 0) {
       if (_CutOff) {
         printf("reset\n");
-        RestoreModelRare();  // Try to reclaim memory
+        RestoreModelRare(); // Try to reclaim memory
       } else {
-        StartModelRare();  // Full model reset
+        StartModelRare(); // Full model reset
       }
     }
   }
@@ -1473,7 +1536,7 @@ PPMD::PPMD(int order, int memory, const unsigned int &bit_context,
     : ByteModel(vocab), byte_(bit_context),
       byte_map_(Eigen::VectorXi::Zero(256)) {
   ppmd_model_.reset(new ppmd_Model());
-  ppmd_model_->Init(order, memory, 1, 0);  // memory << 20 bytes allocated!
+  ppmd_model_->Init(order, memory, 1, 0); // memory << 20 bytes allocated!
 }
 
 PPMD::~PPMD() {}
@@ -1482,17 +1545,17 @@ PPMD::~PPMD() {}
 // Output: probs_ contains probability distribution for next 256 possible bytes
 void PPMD::ByteUpdate() {
   ++counter_;
-  ppmd_model_->ppmd_UpdateByte(byte_);     // Update frequencies with actual byte
-  ppmd_model_->ppmd_PrepareByte();         // Generate predictions for next byte
-  
+  ppmd_model_->ppmd_UpdateByte(byte_); // Update frequencies with actual byte
+  ppmd_model_->ppmd_PrepareByte();     // Generate predictions for next byte
+
   // Extract probabilities from internal format
   for (int i = 0; i < 256; ++i) {
-    probs_[i] = ppmd_model_->sqp[i];       // Get raw frequency
+    probs_[i] = ppmd_model_->sqp[i]; // Get raw frequency
     if (probs_[i] < 1)
-      probs_[i] = 1;                       // Minimum probability (avoid zero)
+      probs_[i] = 1; // Minimum probability (avoid zero)
   }
   ByteModel::ByteUpdate();
-  probs_ /= probs_.sum();                  // Normalize to sum to 1.0
+  probs_ /= probs_.sum(); // Normalize to sum to 1.0
 }
 
 } // namespace PPMD
