@@ -95,13 +95,9 @@ inline Eigen::VectorXf& Lstm::Perceive(unsigned int input) {
       for (int layer = layers_.size() - 1; layer >= 0; --layer) {
         int offset = layer * num_cells_;
         for (unsigned int i = 0; i < output_size_; ++i) {
-//          float error = 0;
-//          if (i == input_history_[epoch]) error = output_[epoch][i] - 1;
-//          else error = output_[epoch][i];
-          float error = (i == input_history_[epoch]) ? (output_[epoch][i] - 1) : output_[epoch][i];
-          for (unsigned int j = 0; j < hidden_error_.size(); ++j) {
-            hidden_error_[j] += output_layer_[epoch][i][j + offset] * error;
-          }
+          // Compute error for class i and accumulate vectorized contribution
+          const float error = output_[epoch][i] - (i == static_cast<unsigned int>(input_history_[epoch]));
+          hidden_error_.noalias() += error * output_layer_[epoch][i].segment(offset, num_cells_);
         }
         int prev_epoch = epoch - 1;
         if (prev_epoch == -1) prev_epoch = horizon_ - 1;
@@ -113,13 +109,14 @@ inline Eigen::VectorXf& Lstm::Perceive(unsigned int input) {
     }
   }
 
+  // Vectorized output layer update: compute all errors and update in batch
+  Eigen::VectorXf errors = output_[last_epoch];
+  errors[input] -= 1.0f;
+  errors *= learning_rate_;
+  
   for (unsigned int i = 0; i < output_size_; ++i) {
-//    float error = 0;
-//    if (i == input) error = output_[last_epoch][i] - 1;
-//    else error = output_[last_epoch][i];
-    float error = (i == input) ? (output_[last_epoch][i] - 1) : output_[last_epoch][i];
     output_layer_[epoch_][i] = output_layer_[last_epoch][i];
-    output_layer_[epoch_][i] -= learning_rate_ * error * hidden_;
+    output_layer_[epoch_][i].noalias() -= errors[i] * hidden_;
   }
   return Predict(input);
 }
