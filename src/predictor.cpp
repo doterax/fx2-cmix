@@ -3,8 +3,10 @@
 #include <stdio.h>
 #include <vector>
 
-Predictor::Predictor(const std::vector<bool> &vocab)
-    : manager_(), sigmoid_(100001), vocab_(vocab) {
+Predictor::Predictor(const std::vector<bool> &vocab, int ppmd_order,
+                     int ppmd_mem_mb)
+    : manager_(), sigmoid_(100001), vocab_(vocab), ppmd_order_(ppmd_order),
+      ppmd_mem_mb_(ppmd_mem_mb) {
   AddBracket();
   AddPPMD();
   AddWord();
@@ -55,7 +57,7 @@ void Predictor::AddPPMD() {
   // Memory parameter: value << 20 bytes allocated
   // 1024 = 1 GB, 2048 = 2 GB, 14000 = 13.67 GB (original - too high!)
   // Reducing to 1024 MB (1 GB) for reasonable memory usage (original was 14000)
-  byte_model_.emplace(25, 1024, manager_.bit_context_, vocab_);
+  byte_model_.emplace(ppmd_order_, ppmd_mem_mb_, manager_.bit_context_, vocab_);
 }
 
 void Predictor::AddWord() {

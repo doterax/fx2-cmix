@@ -38,7 +38,8 @@
 
 class Predictor : public IPredictor {
 public:
-  Predictor(const std::vector<bool> &vocab);
+  Predictor(const std::vector<bool> &vocab, int ppmd_order = 25,
+            int ppmd_mem_mb = 1024);
   float Predict();
   void  Perceive(int bit);
   void  Pretrain(int bit);
@@ -75,6 +76,10 @@ private:
   std::optional<ByteMixer>         byte_mixer_;
   std::vector<bool>                vocab_;
   FXCM                             fxcm_model_;
+
+  // Config
+  int ppmd_order_  = 25;
+  int ppmd_mem_mb_ = 1024;
 };
 
 #endif

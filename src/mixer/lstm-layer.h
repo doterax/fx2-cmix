@@ -16,19 +16,19 @@ struct NeuronLayer {
     beta_(Eigen::VectorXf::Zero(num_cells)), 
     beta_u_(Eigen::VectorXf::Zero(num_cells)), 
     beta_m_(Eigen::VectorXf::Zero(num_cells)),
-    beta_v_(Eigen::VectorXf::Zero(num_cells)), 
-    weights_(num_cells, Eigen::VectorXf::Zero(input_size)),
+    beta_v_(Eigen::VectorXf::Zero(num_cells)),
+    weights_(Eigen::MatrixXf::Zero(num_cells, input_size)),
     state_(horizon, Eigen::VectorXf::Zero(num_cells)),
-    update_(num_cells, Eigen::VectorXf::Zero(input_size)),
-    m_(num_cells, Eigen::VectorXf::Zero(input_size)),
-    v_(num_cells, Eigen::VectorXf::Zero(input_size)),
-    transpose_(input_size - offset, Eigen::VectorXf::Zero(num_cells)),
+    update_(Eigen::MatrixXf::Zero(num_cells, input_size)),
+    m_(Eigen::MatrixXf::Zero(num_cells, input_size)),
+    v_(Eigen::MatrixXf::Zero(num_cells, input_size)),
+    recurrent_weights_(Eigen::MatrixXf::Zero(num_cells, input_size - offset)),
     norm_(horizon, Eigen::VectorXf::Zero(num_cells)) {};
 
   Eigen::VectorXf error_, ivar_, gamma_, gamma_u_, gamma_m_, gamma_v_,
       beta_, beta_u_, beta_m_, beta_v_;
-  std::vector<Eigen::VectorXf> weights_, state_, update_, m_, v_,
-      transpose_, norm_;
+  Eigen::MatrixXf weights_, update_, m_, v_, recurrent_weights_;
+  std::vector<Eigen::VectorXf> state_, norm_;
 };
 
 class LstmLayer {
@@ -40,7 +40,7 @@ class LstmLayer {
       Eigen::VectorXf* hidden, int hidden_start);
   void BackwardPass(const Eigen::VectorXf& input, int epoch,
       int layer, int input_symbol, Eigen::VectorXf* hidden_error);
-  std::vector<std::vector<Eigen::VectorXf>*> Weights();
+  std::vector<Eigen::MatrixXf*> Weights();
 
  private:
   Eigen::VectorXf state_, state_error_, stored_error_;

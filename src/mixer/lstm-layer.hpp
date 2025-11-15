@@ -59,6 +59,33 @@ inline void Adam(Eigen::VectorXf* g, Eigen::VectorXf* m,
   }
 }
 
+inline void AdamMatrix(Eigen::MatrixXf* g, Eigen::MatrixXf* m,
+    Eigen::MatrixXf* v, Eigen::MatrixXf* w, float learning_rate,
+    float t) {
+  const float beta1 = 0.025f, beta2 = 0.9999f, eps = 1e-6f;
+  
+  float alpha;
+  if (t < UPDATE_LIMIT) {
+    alpha = learning_rate * 0.1f / sqrt(5e-5f * t + 1.0f); 
+  } else {
+    alpha = learning_rate * 0.1f / sqrt(5e-5f * UPDATE_LIMIT + 1.0f); 
+  }
+  
+  // Match original Adam exactly
+  (*m) *= beta1;
+  (*m) += (1.0f - beta1) * (*g);
+  (*v) *= beta2;
+  (*v) += (1.0f - beta2) * g->cwiseProduct(*g);
+  
+  if (t < UPDATE_LIMIT) {
+    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, t))).cwiseQuotient(
+        ((*v) / (float)(1.0f - pow(beta2, t))).array().sqrt().matrix() + eps * Eigen::MatrixXf::Ones(w->rows(), w->cols())));
+  } else {
+    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, UPDATE_LIMIT))).cwiseQuotient(
+        ((*v) / (float)(1.0f - pow(beta2, UPDATE_LIMIT))).array().sqrt().matrix() + eps * Eigen::MatrixXf::Ones(w->rows(), w->cols())));
+  }
+}
+
 }
 
 inline LstmLayer::LstmLayer(unsigned int input_size, unsigned int auxiliary_input_size,
@@ -79,13 +106,15 @@ inline LstmLayer::LstmLayer(unsigned int input_size, unsigned int auxiliary_inpu
   float val = sqrt(6.0f / float(input_size_ + output_size_));
   float low = -val;
   float range = 2 * val;
+  
+  // Initialize weight matrices with Xavier initialization
   for (unsigned int i = 0; i < num_cells_; ++i) {
-    for (unsigned int j = 0; j < forget_gate_.weights_[i].size(); ++j) {
-      forget_gate_.weights_[i][j] = low + get_uniform_random() * range;
-      input_node_.weights_[i][j] = low + get_uniform_random() * range;
-      output_gate_.weights_[i][j] = low + get_uniform_random() * range;
+    for (unsigned int j = 0; j < forget_gate_.weights_.cols(); ++j) {
+      forget_gate_.weights_(i, j) = low + get_uniform_random() * range;
+      input_node_.weights_(i, j) = low + get_uniform_random() * range;
+      output_gate_.weights_(i, j) = low + get_uniform_random() * range;
     }
-    forget_gate_.weights_[i][forget_gate_.weights_[i].size() - 1] = 1;
+    forget_gate_.weights_(i, forget_gate_.weights_.cols() - 1) = 1;
   }
 }
 
@@ -113,23 +142,17 @@ inline void LstmLayer::ForwardPass(const Eigen::VectorXf& input, int input_symbo
 
 inline void LstmLayer::ForwardPass(NeuronLayer& neurons,
     const Eigen::VectorXf& input, int input_symbol) {
-  // Vectorized computation: accumulate input_symbol contribution
-  for (unsigned int i = 0; i < num_cells_; ++i) {
-    neurons.norm_[epoch_][i] = neurons.weights_[i][input_symbol];
-  }
-  
-  // Vectorized matrix-vector multiplication for input contribution
+  // Batched matrix-vector multiply: W * [input_embedding; input_features]
+  // Extract input symbol column + matrix multiply for continuous input
+  neurons.norm_[epoch_].noalias() = neurons.weights_.col(input_symbol);
   int input_size = input.size();
-  for (unsigned int i = 0; i < num_cells_; ++i) {
-    neurons.norm_[epoch_][i] += neurons.weights_[i].segment(output_size_, input_size).dot(input);
-  }
+  neurons.norm_[epoch_].noalias() += neurons.weights_.middleCols(output_size_, input_size) * input;
   
   // Layer normalization with vectorized operations
   float variance = neurons.norm_[epoch_].squaredNorm() / num_cells_;
   neurons.ivar_[epoch_] = 1.0f / sqrt(variance + 1e-5f);
   neurons.norm_[epoch_] *= neurons.ivar_[epoch_];
-  neurons.state_[epoch_] = neurons.norm_[epoch_].cwiseProduct(neurons.gamma_) +
-      neurons.beta_;
+  neurons.state_[epoch_].noalias() = neurons.norm_[epoch_].cwiseProduct(neurons.gamma_) + neurons.beta_;
 }
 
 inline void LstmLayer::ClipGradients(Eigen::VectorXf* arr) {
@@ -190,65 +213,48 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
   if (epoch == (int)horizon_ - 1) {
     neurons.gamma_u_.setZero();
     neurons.beta_u_.setZero();
-    for (unsigned int i = 0; i < num_cells_; ++i) {
-      neurons.update_[i].setZero();
-      int offset = output_size_ + input_size_;
-      for (unsigned int j = 0; j < neurons.transpose_.size(); ++j) {
-        neurons.transpose_[j][i] = neurons.weights_[i][j + offset];
-      }
-    }
+    neurons.update_.setZero();
   }
+  
   neurons.beta_u_ += neurons.error_;
   neurons.gamma_u_ += neurons.error_.cwiseProduct(neurons.norm_[epoch]);
   neurons.error_ = neurons.error_.cwiseProduct(neurons.gamma_) * neurons.ivar_[epoch];
-  neurons.error_ -= ((neurons.error_.cwiseProduct(neurons.norm_[epoch]).sum() /
-      num_cells_) * neurons.norm_[epoch]);
+  neurons.error_ -= ((neurons.error_.cwiseProduct(neurons.norm_[epoch]).sum() / num_cells_) * neurons.norm_[epoch]);
   
-  // Vectorized backward pass through hidden layer connections
+  // Strict layout partitions to match original indexing
+  const int embed_cols = output_size_;
+  const int in_cols = input_size_;
+  const int offset = embed_cols + in_cols; // start of temporal+inter-layer blocks
+  // recurrent block: columns [offset .. offset+num_cells_-1]
+  // prev-layer block: columns [offset+num_cells_ .. offset+2*num_cells_-1]
+
+  // Hidden layer error propagation (to previous layer)
   if (layer > 0) {
-    for (unsigned int i = 0; i < num_cells_; ++i) {
-      // Use dot product for vectorized computation
-      float f = 0;
-      for (unsigned int j = 0; j < num_cells_; ++j) {
-        f += neurons.error_[j] * neurons.transpose_[num_cells_ + i][j];
-      }
-      (*hidden_error)[i] += f;
-    }
+    auto W_prev = neurons.weights_.block(0, offset + num_cells_, num_cells_, num_cells_);
+    hidden_error->segment(0, num_cells_).noalias() += W_prev.transpose() * neurons.error_;
   }
-  
-  // Vectorized recurrent error accumulation
+
+  // Recurrent error accumulation (to previous time step)
   if (epoch > 0) {
-    for (unsigned int i = 0; i < num_cells_; ++i) {
-      // Use dot product for vectorized computation
-      float f = 0;
-      for (unsigned int j = 0; j < num_cells_; ++j) {
-        f += neurons.error_[j] * neurons.transpose_[i][j];
-      }
-      stored_error_[i] += f;
-    }
+    auto W_rec = neurons.weights_.block(0, offset, num_cells_, num_cells_);
+    stored_error_.noalias() += W_rec.transpose() * neurons.error_;
   }
   
-  // Vectorized weight gradient accumulation
+  // Batched outer product for weight gradient: error * input^T
   int input_size = input.size();
-  for (unsigned int i = 0; i < num_cells_; ++i) {
-    // Outer product: error[i] * input -> gradient contribution
-    neurons.update_[i].segment(output_size_, input_size) += neurons.error_[i] * input;
-    neurons.update_[i][input_symbol] += neurons.error_[i];
-  }
+  neurons.update_.middleCols(output_size_, input_size).noalias() += neurons.error_ * input.transpose();
+  neurons.update_.col(input_symbol) += neurons.error_;
+  
   if (epoch == 0) {
-    for (unsigned int i = 0; i < num_cells_; ++i) {
-      Adam(&neurons.update_[i], &neurons.m_[i], &neurons.v_[i],
-          &neurons.weights_[i], learning_rate_, update_steps_);
-    }
-    Adam(&neurons.gamma_u_, &neurons.gamma_m_, &neurons.gamma_v_,
-        &neurons.gamma_, learning_rate_, update_steps_);
-    Adam(&neurons.beta_u_, &neurons.beta_m_, &neurons.beta_v_,
-        &neurons.beta_, learning_rate_, update_steps_);
+    // Matrix-wise Adam update
+    AdamMatrix(&neurons.update_, &neurons.m_, &neurons.v_, &neurons.weights_, learning_rate_, update_steps_);
+    Adam(&neurons.gamma_u_, &neurons.gamma_m_, &neurons.gamma_v_, &neurons.gamma_, learning_rate_, update_steps_);
+    Adam(&neurons.beta_u_, &neurons.beta_m_, &neurons.beta_v_, &neurons.beta_, learning_rate_, update_steps_);
   }
 }
 
-inline std::vector<std::vector<Eigen::VectorXf>*> LstmLayer::Weights() {
-  std::vector<std::vector<Eigen::VectorXf>*> weights;
+inline std::vector<Eigen::MatrixXf*> LstmLayer::Weights() {
+  std::vector<Eigen::MatrixXf*> weights;
   weights.push_back(&forget_gate_.weights_);
   weights.push_back(&input_node_.weights_);
   weights.push_back(&output_gate_.weights_);
