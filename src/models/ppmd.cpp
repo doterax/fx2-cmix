@@ -368,15 +368,6 @@ struct ppmd_Model {
 
     uint newIndx = Ptr2Indx(p);
 
-    // DEBUG: Detect when corrupted index is written
-    if (newIndx == 0x13610002 || newIndx > 0xFFFFFF) {
-      printf("[setNext] CORRUPTION DETECTED: Writing suspicious index 0x%x\n",
-             newIndx);
-      printf("  This = %p, p = %p\n", This, p);
-      printf("  HeapStart = %p, UnitsStart = %p\n", HeapStart, UnitsStart);
-      assert(false && "setNext: Corrupted index detected");
-    }
-
     This->NextIndx = newIndx;
   }
 
