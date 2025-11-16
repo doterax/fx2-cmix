@@ -27,7 +27,7 @@ LFLAGS_PROFILE         := -m64 -std=c++17 -g
 # Production build flags (full optimization, LTO)
 CPPFLAGS_PART-THAT-CAN-BE-SLOW    := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
 CPPFLAGS_PART-THAT-CAN-BE-SLOW    += -Os -fdata-sections -ffunction-sections -flto
-CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -ffast-math -fhonor-nans -fhonor-infinities -fvectorize -fslp-vectorize -funroll-loops -fdata-sections -ffunction-sections -flto
+CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -ffast-math -fvectorize -fslp-vectorize -funroll-loops -fdata-sections -ffunction-sections -flto -fomit-frame-pointer -falign-functions=32
 LFLAGS := -m64 -std=c++17 -flto -fuse-ld=lld
 
 OUT_DIR := out
