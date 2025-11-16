@@ -188,6 +188,13 @@ test-utf8:
 test-longest-words:
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/test_longest_words.cpp -o test-longest-words.exe
 
+# UTF-8 preprocessor test (compress/decompress with word remapping)
+$(OUT_DIR)/utf8_preprocessor.o: src/preprocess_utf8/utf8_preprocessor.cpp src/preprocess_utf8/utf8_preprocessor.h | $(OUT_DIR)
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/preprocess_utf8/utf8_preprocessor.cpp -o $(OUT_DIR)/utf8_preprocessor.o
+
+test-utf8-preprocess: $(OUT_DIR)/utf8_preprocessor.o
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/test_utf8_preprocess.cpp $(OUT_DIR)/utf8_preprocessor.o -o test-utf8-preprocess.exe
+
 $(OUT_DIR)/byte-model.o: src/models/byte-model.cpp src/models/byte-model.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/models/byte-model.cpp -o $(OUT_DIR)/byte-model.o
 
@@ -196,6 +203,9 @@ clean:
 	rm -f cmix.exe
 	rm -f remap.exe
 	rm -f test-ppmd.exe
+	rm -f test-utf8.exe
+	rm -f test-longest-words.exe
+	rm -f test-utf8-preprocess.exe
 
 all: cmix remap
 
