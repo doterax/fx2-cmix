@@ -180,6 +180,10 @@ test-ppmd: $(OUT_DIR)/ppmd-debug.o $(OUT_DIR)/byte-model-debug.o
 test-ppmd-mem: $(OUT_DIR)/byte-model-debug.o
 	$(CC) $(filter-out -DNDEBUG,$(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)) -g -fuse-ld=lld src/test_ppmd_mem.cpp $(OUT_DIR)/byte-model-debug.o -o test-ppmd-mem.exe
 
+# UTF-8 character statistics analyzer
+test-utf8:
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/test_utf8.cpp -o test-utf8.exe
+
 $(OUT_DIR)/byte-model.o: src/models/byte-model.cpp src/models/byte-model.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/models/byte-model.cpp -o $(OUT_DIR)/byte-model.o
 

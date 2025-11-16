@@ -1,0 +1,10 @@
+Hello world! 你好世界！
+Русский текст с кириллицей.
+Emoji test: 🚀 🎉 🔥 💻
+Greek: αβγδεΩ
+Math: ∑∫√∞
+More text with UTF-8 characters: äöü ñ é â
+Japanese: こんにちは 日本語
+Arabic: مرحبا العالم
+Hebrew: שלום עולם
+Repeated chars: 你你你你你 世世世世
