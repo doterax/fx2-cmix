@@ -184,6 +184,10 @@ test-ppmd-mem: $(OUT_DIR)/byte-model-debug.o
 test-utf8:
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/test_utf8.cpp -o test-utf8.exe
 
+# Longest words analyzer (UTF-8, trie-based)
+test-longest-words:
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/test_longest_words.cpp -o test-longest-words.exe
+
 $(OUT_DIR)/byte-model.o: src/models/byte-model.cpp src/models/byte-model.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/models/byte-model.cpp -o $(OUT_DIR)/byte-model.o
 
