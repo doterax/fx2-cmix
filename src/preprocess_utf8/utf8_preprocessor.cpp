@@ -205,7 +205,7 @@ static bool AnalyzeInput(const std::vector<unsigned char>& buffer,
     return true;
 }
 
-bool Compress(FILE* input, FILE* output) {
+bool CompressWords(FILE* input, FILE* output) {
     if (!input || !output) return false;
     
     // Read entire input
@@ -335,6 +335,178 @@ bool Decompress(FILE* input, FILE* output) {
             std::fwrite(&byte, 1, 1, output);
         }
     }
+    
+    return true;
+}
+
+bool CompressUtf8(FILE* input, FILE* output) {
+    if (!input || !output) return false;
+    
+    // Read entire input
+    std::fseek(input, 0, SEEK_END);
+    size_t file_size = std::ftell(input);
+    std::fseek(input, 0, SEEK_SET);
+    
+    std::vector<unsigned char> buffer(file_size);
+    if (std::fread(buffer.data(), 1, file_size, input) != file_size) {
+        return false;
+    }
+    
+    // Build statistics: codepoint -> occurrence count
+    std::unordered_map<uint32_t, uint64_t> stats;
+    bool used_ascii[128] = {false};
+    
+    size_t pos = 0;
+    while (pos < file_size) {
+        size_t consumed = 0;
+        uint32_t cp = DecodeUTF8(buffer.data() + pos, file_size - pos, &consumed);
+        if (consumed == 0) {
+            pos++;
+            continue;
+        }
+        stats[cp]++;
+        if (cp < 128) {
+            used_ascii[cp] = true;
+        }
+        pos += consumed;
+    }
+    
+    // Collect unused ASCII slots
+    std::vector<unsigned char> unused_slots;
+    for (int i = 0; i < 128; ++i) {
+        if (!used_ascii[i]) {
+            unused_slots.push_back((unsigned char)i);
+        }
+    }
+    
+    if (unused_slots.empty()) {
+        // No optimization possible - write zero slot count and copy input
+        unsigned char slot_count = 0;
+        std::fwrite(&slot_count, 1, 1, output);
+        std::fwrite(buffer.data(), 1, file_size, output);
+        return true;
+    }
+    
+    // Calculate byte length for each multi-byte character
+    auto GetByteLength = [](uint32_t cp) -> size_t {
+        if (cp < 0x80) return 1;
+        if (cp < 0x800) return 2;
+        if (cp < 0x10000) return 3;
+        return 4;
+    };
+    
+    // Build candidate list: multi-byte characters only
+    struct CharCandidate {
+        uint32_t codepoint;
+        uint64_t count;
+        size_t byte_len;
+        uint64_t score;
+    };
+    
+    std::vector<CharCandidate> candidates;
+    for (const auto& kv : stats) {
+        uint32_t cp = kv.first;
+        uint64_t cnt = kv.second;
+        size_t blen = GetByteLength(cp);
+        if (blen > 1) { // Only multi-byte characters benefit
+            uint64_t score = (uint64_t)(blen - 1) * cnt;
+            candidates.push_back({cp, cnt, blen, score});
+        }
+    }
+    
+    // Sort by score descending
+    std::sort(candidates.begin(), candidates.end(), [](const CharCandidate& a, const CharCandidate& b) {
+        if (a.score != b.score) return a.score > b.score;
+        if (a.count != b.count) return a.count > b.count;
+        return a.byte_len > b.byte_len;
+    });
+    
+    // Take top N (limited by unused slots)
+    size_t remap_count = std::min(unused_slots.size(), candidates.size());
+    
+    if (remap_count == 0) {
+        // No remapping benefit
+        unsigned char slot_count = 0;
+        std::fwrite(&slot_count, 1, 1, output);
+        std::fwrite(buffer.data(), 1, file_size, output);
+        return true;
+    }
+    
+    // Build remap table: codepoint -> slot_byte
+    std::unordered_map<uint32_t, unsigned char> cp_to_slot;
+    for (size_t i = 0; i < remap_count; ++i) {
+        cp_to_slot[candidates[i].codepoint] = unused_slots[i];
+    }
+    
+    // Write header: slot_count
+    unsigned char slot_count = (unsigned char)remap_count;
+    std::fwrite(&slot_count, 1, 1, output);
+    
+    // Write mapping table: for each slot, write slot_byte, utf8_length, utf8_bytes
+    auto EncodeUTF8 = [](uint32_t cp, unsigned char* out) -> size_t {
+        if (cp < 0x80) {
+            out[0] = (unsigned char)cp;
+            return 1;
+        }
+        if (cp < 0x800) {
+            out[0] = 0xC0 | ((cp >> 6) & 0x1F);
+            out[1] = 0x80 | (cp & 0x3F);
+            return 2;
+        }
+        if (cp < 0x10000) {
+            out[0] = 0xE0 | ((cp >> 12) & 0x0F);
+            out[1] = 0x80 | ((cp >> 6) & 0x3F);
+            out[2] = 0x80 | (cp & 0x3F);
+            return 3;
+        }
+        out[0] = 0xF0 | ((cp >> 18) & 0x07);
+        out[1] = 0x80 | ((cp >> 12) & 0x3F);
+        out[2] = 0x80 | ((cp >> 6) & 0x3F);
+        out[3] = 0x80 | (cp & 0x3F);
+        return 4;
+    };
+    
+    for (size_t i = 0; i < remap_count; ++i) {
+        unsigned char slot_byte = unused_slots[i];
+        uint32_t cp = candidates[i].codepoint;
+        unsigned char utf8_bytes[4];
+        size_t utf8_len = EncodeUTF8(cp, utf8_bytes);
+        unsigned char len_byte = (unsigned char)utf8_len;
+        
+        std::fwrite(&slot_byte, 1, 1, output);
+        std::fwrite(&len_byte, 1, 1, output);
+        std::fwrite(utf8_bytes, 1, utf8_len, output);
+    }
+    
+    // Transform input: replace multi-byte UTF-8 characters with slots
+    std::vector<unsigned char> result;
+    result.reserve(file_size);
+    
+    pos = 0;
+    while (pos < file_size) {
+        size_t consumed = 0;
+        uint32_t cp = DecodeUTF8(buffer.data() + pos, file_size - pos, &consumed);
+        if (consumed == 0) {
+            result.push_back(buffer[pos]);
+            pos++;
+            continue;
+        }
+        
+        auto it = cp_to_slot.find(cp);
+        if (it != cp_to_slot.end()) {
+            // Replace with slot byte
+            result.push_back(it->second);
+        } else {
+            // Copy original UTF-8 bytes
+            for (size_t i = 0; i < consumed; ++i) {
+                result.push_back(buffer[pos + i]);
+            }
+        }
+        pos += consumed;
+    }
+    
+    // Write transformed data
+    std::fwrite(result.data(), 1, result.size(), output);
     
     return true;
 }

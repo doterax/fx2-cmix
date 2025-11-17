@@ -10,7 +10,11 @@ namespace utf8_preprocess {
 
 // Compress input file by replacing frequent multi-byte words with unused ASCII slots
 // Returns true on success
-bool Compress(FILE* input, FILE* output);
+bool CompressWords(FILE* input, FILE* output);
+
+// Compress input file by replacing frequent multi-byte UTF-8 characters with unused ASCII slots
+// Returns true on success
+bool CompressUtf8(FILE* input, FILE* output);
 
 // Decompress by restoring original words from single-byte replacements
 // Returns true on success
