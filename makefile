@@ -36,6 +36,9 @@ OUT_DIR := out
 $(OUT_DIR):
 	mkdir -p $(OUT_DIR)
 
+$(OUT_DIR)/preprocess_chunked:
+	mkdir -p $(OUT_DIR)/preprocess_chunked
+
 prof_gen: CPPFLAGS_PART-THAT-CAN-BE-SLOW    += -fprofile-generate=$(ROOT_DIR)/pgo_data
 prof_gen: CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -fprofile-generate=$(ROOT_DIR)/pgo_data
 prof_gen: LFLAGS                            += -fprofile-generate=$(ROOT_DIR)/pgo_data
@@ -90,6 +93,9 @@ $(OUT_DIR)/sparse.o: src/contexts/sparse.cpp src/contexts/sparse.h | $(OUT_DIR)
 
 $(OUT_DIR)/bracket.o: src/models/bracket.cpp src/models/bracket.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/models/bracket.cpp -o $(OUT_DIR)/bracket.o
+
+$(OUT_DIR)/preprocess_chunked/dump_chunked.o: src/preprocess_chunked/dump_chunked.cpp | $(OUT_DIR)/preprocess_chunked
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/preprocess_chunked/dump_chunked.cpp -o $(OUT_DIR)/preprocess_chunked/dump_chunked.o
 
 $(OUT_DIR)/byte-model.o: src/models/byte-model.cpp src/models/byte-model.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/models/byte-model.cpp -o $(OUT_DIR)/byte-model.o
@@ -195,6 +201,16 @@ $(OUT_DIR)/utf8_preprocessor.o: src/preprocess_utf8/utf8_preprocessor.cpp src/pr
 test-utf8-preprocess: $(OUT_DIR)/utf8_preprocessor.o
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/test_utf8_preprocess.cpp $(OUT_DIR)/utf8_preprocessor.o -o test-utf8-preprocess.exe
 
+# Chunked preprocessor test (region-based preprocessing)
+$(OUT_DIR)/chunked_preprocessor.o: src/preprocess_chunked/chunked_preprocessor.cpp src/preprocess_chunked/chunked_preprocessor.h | $(OUT_DIR)
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/preprocess_chunked/chunked_preprocessor.cpp -o $(OUT_DIR)/chunked_preprocessor.o
+
+test-chunked-preprocess: $(OUT_DIR)/chunked_preprocessor.o
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld src/preprocess_chunked/test_chunked_preprocess.cpp $(OUT_DIR)/chunked_preprocessor.o -o test-chunked-preprocess.exe
+
+dump-chunked.exe: $(OUT_DIR)/preprocess_chunked/dump_chunked.o
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld $^ -o dump-chunked.exe
+
 $(OUT_DIR)/byte-model.o: src/models/byte-model.cpp src/models/byte-model.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/models/byte-model.cpp -o $(OUT_DIR)/byte-model.o
 
@@ -206,6 +222,8 @@ clean:
 	rm -f test-utf8.exe
 	rm -f test-longest-words.exe
 	rm -f test-utf8-preprocess.exe
+	rm -f test-chunked-preprocess.exe
+	rm -f dump-chunked.exe
 
 all: cmix remap
 
