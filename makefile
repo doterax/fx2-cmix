@@ -214,6 +214,10 @@ dump-chunked.exe: $(OUT_DIR)/preprocess_chunked/dump_chunked.o
 $(OUT_DIR)/byte-model.o: src/models/byte-model.cpp src/models/byte-model.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/models/byte-model.cpp -o $(OUT_DIR)/byte-model.o
 
+# V2 stats tool (chunked preprocessor version 2)
+stats_v2.exe: src/preprocess_chunked_v2/stats_v2.cpp
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -g -fuse-ld=lld $< -o $@
+
 clean:
 	rm -rf $(OUT_DIR)
 	rm -f cmix.exe

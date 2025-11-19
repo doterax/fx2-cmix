@@ -31,3 +31,5 @@ test-ppmd.pdb
 *.pdb
 
 y-cmix-notes.txt
+
+*.o
