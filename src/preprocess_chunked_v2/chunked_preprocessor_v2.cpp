@@ -8,7 +8,7 @@
 // Region types (3 bits)
 enum ChunkTypeV2 {
   CHUNK_RAW            = 0,
-  CHUNK_ASCII_SENTENCE = 1,
+  CHUNK_NUMBER         = 1, // replaced ASCII_SENTENCE in conceptual v3
   CHUNK_BRACKETS       = 2,
   CHUNK_WIKI_HEADER    = 3,
   CHUNK_XML_TAG        = 4,
@@ -31,28 +31,7 @@ static void write_type_and_transform(BitStreamWriter &control, uint8_t type,
   control.writeBits(transform, 2);
 }
 
-static void write_varint_bits(BitStreamWriter &control, uint64_t size) {
-  std::vector<uint8_t> tmp;
-  encode_varint(size, tmp);
-  for (uint8_t b : tmp)
-    control.writeBits(b, 8);
-}
-
-static bool read_varint_bits(BitStreamReader &control, uint64_t &value) {
-  value     = 0;
-  int shift = 0;
-  while (true) {
-    if (control.eof())
-      return false;
-    uint64_t b = control.readBits(8);
-    value |= (uint64_t)(b & 0x7F) << shift;
-    if ((b & 0x80) == 0)
-      return true;
-    shift += 7;
-    if (shift > 63)
-      return false;
-  }
-}
+// Removed legacy varint helpers (lengths now externalized in numbers list)
 
 static bool is_all_upper(const std::vector<uint8_t> &buf, size_t start,
                          size_t end) {
@@ -114,13 +93,15 @@ bool ChunkedPreprocessorV2::compress_stream(BitStreamReader       &input,
                                             BitStreamWriter       &control,
                                             BitStreamWriter       &ascii,
                                             BitStreamWriter       &utf8,
-                                            const ChunkedV2Config &cfg) {
+                                            const ChunkedV2Config &cfg,
+                                            std::vector<uint64_t> *numbers_out) {
   std::vector<uint8_t> buffer;
   buffer.reserve(1024);
   while (!input.eof()) {
     uint64_t b = input.readBits(8);
     buffer.push_back((uint8_t)b);
   }
+  if (numbers_out) numbers_out->clear();
   size_t pos = 0;
   while (pos < buffer.size()) {
     uint8_t              type         = CHUNK_RAW;
@@ -129,6 +110,7 @@ bool ChunkedPreprocessorV2::compress_stream(BitStreamReader       &input,
     size_t               region_end   = pos + 1;
     std::vector<uint8_t> payload;
     bool                 utf8_region = false;
+    bool                 number_region = false;
     uint8_t              c           = buffer[pos];
     if (!is_ascii(c)) {
       size_t i = pos;
@@ -142,7 +124,32 @@ bool ChunkedPreprocessorV2::compress_stream(BitStreamReader       &input,
       region_end  = i;
       utf8_region = true;
     } else {
-      // (Repeat pattern logic identical to file-based compress)
+      // NUMBER detection (positive integer run) first
+      if (is_digit(c)) {
+        size_t i = pos;
+        while (i < buffer.size() && is_digit(buffer[i])) i++;
+        size_t run_len = i - pos;
+        if (run_len >= cfg.min_number_len && run_len <= 19) { // limit to 64-bit safe length
+          type = CHUNK_NUMBER;
+          region_end = i;
+          number_region = true;
+          uint64_t value = 0;
+          for (size_t k = pos; k < region_end; ++k) value = value * 10 + (uint64_t)(buffer[k] - '0');
+          // Preserve run length only if the number actually has leading zero(s).
+          bool hasLeadingZero = (buffer[pos] == '0');
+          // digits length of value
+          // Compute digit count without floating math
+          uint64_t digitsLen = 0; {
+            uint64_t tmp = value; do { digitsLen++; tmp /= 10; } while (tmp > 0);
+          }
+          uint64_t stored_run_len = hasLeadingZero ? (uint64_t)run_len : digitsLen;
+          if (numbers_out) {
+            numbers_out->push_back(stored_run_len);
+            numbers_out->push_back(value);
+          }
+        }
+      }
+      // Other pattern logic
       if (c == '[' && pos + 3 < buffer.size() && buffer[pos + 1] == '[') {
         size_t inner_start = pos + 2;
         size_t i           = inner_start;
@@ -167,7 +174,7 @@ bool ChunkedPreprocessorV2::compress_stream(BitStreamReader       &input,
           }
         }
       }
-      if (type == CHUNK_RAW && c == '=' && pos + 3 < buffer.size() &&
+      if (type == CHUNK_RAW && !number_region && c == '=' && pos + 3 < buffer.size() &&
           buffer[pos + 1] == '=') {
         size_t inner_start = pos + 2;
         size_t i           = inner_start;
@@ -192,7 +199,7 @@ bool ChunkedPreprocessorV2::compress_stream(BitStreamReader       &input,
           }
         }
       }
-      if (type == CHUNK_RAW && c == '{' && pos + 3 < buffer.size() &&
+      if (type == CHUNK_RAW && !number_region && c == '{' && pos + 3 < buffer.size() &&
           buffer[pos + 1] == '{') {
         size_t inner_start = pos + 2;
         size_t i           = inner_start;
@@ -217,7 +224,7 @@ bool ChunkedPreprocessorV2::compress_stream(BitStreamReader       &input,
           }
         }
       }
-      if (type == CHUNK_RAW && c == '<' && pos + 2 < buffer.size() &&
+      if (type == CHUNK_RAW && !number_region && c == '<' && pos + 2 < buffer.size() &&
           is_alpha(buffer[pos + 1])) {
         size_t name_start = pos + 1;
         size_t name_end   = name_start;
@@ -309,47 +316,6 @@ bool ChunkedPreprocessorV2::compress_stream(BitStreamReader       &input,
           }
         }
       }
-      if (type == CHUNK_RAW && is_alpha(c) && c >= 'A' && c <= 'Z') {
-        // DEBUG (disabled): probe ASCII_SENTENCE scanning for small tests
-        // fprintf(stderr, "ASCII start pos=%zu char=%c\n", (size_t)pos, (char)c);
-        size_t i     = pos;
-        // fprintf(stderr, "pre while i=%zu size=%zu\n", (size_t)i, (size_t)buffer.size());
-        bool   ended = false;
-        while (i < buffer.size()) {
-          uint8_t cc = buffer[i];
-          if (cc == '.' || cc == '!' || cc == '?') {
-            // fprintf(stderr, "ASCII end punct %c at %zu\n", (char)cc, (size_t)i);
-            ended = true;
-            i++;
-            break;
-          }
-          if (!is_ascii(cc)) break;
-          bool allowed = (is_alphanum(cc) || cc == ' ' || cc == ',' || cc == ';' ||
-                          cc == ':' || cc == '\'' || cc == '"' || cc == '(' ||
-                          cc == ')' || cc == '&' || cc == '-' || cc == '/');
-          if (!allowed) {
-            // fprintf(stderr, "ASCII blocked 0x%02X '%c' at %zu\n", cc, (char)cc, (size_t)i);
-            break;
-          }
-          if ((i - pos) >= cfg.ascii_sentence_max_span) break;
-          i++;
-        }
-        // fprintf(stderr, "ASCII loop end i=%zu ended=%d size=%zu\n", (size_t)i, (int)ended, (size_t)buffer.size());
-        if (ended) {
-          type       = CHUNK_ASCII_SENTENCE;
-          region_end = i;
-          if (is_all_upper(buffer, pos, region_end - 1))
-            transform = TRANSFORM_ALL_UPPER;
-          else if (is_first_upper(buffer, pos, region_end - 1))
-            transform = TRANSFORM_FIRST_UPPER;
-          if (transform == TRANSFORM_NONE) {
-            for (size_t k = pos; k < region_end - 1; ++k)
-              payload.push_back(buffer[k]);
-          } else {
-            to_lowercase_store(buffer, pos, region_end - 1, payload);
-          }
-        }
-      }
       if (type == CHUNK_RAW) {
         size_t i = pos;
         while (i < buffer.size()) {
@@ -361,6 +327,16 @@ bool ChunkedPreprocessorV2::compress_stream(BitStreamReader       &input,
           else if (ch == '{' && i + 1 < buffer.size() && buffer[i + 1] == '{') boundary = true;
           else if (ch == '<' && i + 1 < buffer.size() && is_alpha(buffer[i + 1])) boundary = true;
           else if (is_alpha(ch) && ch >= 'A' && ch <= 'Z' && i == pos) boundary = true; // uppercase boundary only at start
+          else if (is_digit(ch) && i != pos) {
+            size_t di = i;
+            while (di < buffer.size() && is_digit(buffer[di])) di++;
+            size_t run_len = di - i;
+            // Only split RAW on interior NUMBER runs if we've already
+            // accumulated a sufficiently large RAW context to avoid
+            // fragmentation of tiny contexts.
+            if (run_len >= cfg.min_number_len && (i - pos) >= cfg.min_raw_context_before_number_split)
+              boundary = true;
+          }
           if (boundary && i != pos) break;
           i++;
         }
@@ -369,27 +345,30 @@ bool ChunkedPreprocessorV2::compress_stream(BitStreamReader       &input,
     }
     write_type_and_transform(control, type, transform);
     size_t payload_len = 0;
-    if (utf8_region)
+    if (number_region) {
+      payload_len = 0; // NUMBER has no ascii payload stored
+    } else if (utf8_region) {
       payload_len = region_end - region_start;
-    else if (type == CHUNK_ASCII_SENTENCE)
+    } else if (type == CHUNK_BRACKETS || type == CHUNK_WIKI_HEADER || type == CHUNK_CURLY_BRACKETS || type == CHUNK_XML_TAG) {
       payload_len = payload.size();
-    else if (type == CHUNK_BRACKETS || type == CHUNK_WIKI_HEADER ||
-             type == CHUNK_CURLY_BRACKETS || type == CHUNK_XML_TAG)
-      payload_len = payload.size();
-    else
+    } else { // RAW
       payload_len = region_end - region_start;
-    write_varint_bits(control, (uint64_t)payload_len);
+    }
+    if (numbers_out) {
+      if (!number_region) numbers_out->push_back((uint64_t)payload_len); // record length
+      // NUMBER numeric value already pushed earlier
+    }
     if (utf8_region) {
       for (size_t i2 = region_start; i2 < region_end; ++i2)
         utf8.writeBits(buffer[i2], 8);
-    } else if (type == CHUNK_ASCII_SENTENCE || type == CHUNK_BRACKETS ||
-               type == CHUNK_WIKI_HEADER || type == CHUNK_CURLY_BRACKETS ||
-               type == CHUNK_XML_TAG) {
+    } else if (type == CHUNK_BRACKETS || type == CHUNK_WIKI_HEADER || type == CHUNK_CURLY_BRACKETS || type == CHUNK_XML_TAG) {
       for (auto b : payload)
         ascii.writeBits(b, 8);
-    } else {
+    } else if (type == CHUNK_RAW) {
       for (size_t i2 = region_start; i2 < region_end; ++i2)
         ascii.writeBits(buffer[i2], 8);
+    } else if (type == CHUNK_NUMBER) {
+      // no ascii emission for NUMBER
     }
     pos = region_end;
   }
@@ -404,154 +383,99 @@ bool ChunkedPreprocessorV2::decompress_stream(BitStreamReader &control,
                                               BitStreamReader &ascii,
                                               BitStreamReader &utf8,
                                               BitStreamWriter &output,
-                                              const ChunkedV2Config &) {
-  while (!control.eof()) {
-    if (control.eof())
-      break;
-    uint64_t type      = control.readBits(3);
+                                              const ChunkedV2Config &cfg,
+                                              const std::vector<uint64_t> *numbers_in) {
+  (void)cfg;
+  size_t number_pos = 0; // index into numbers list
+  size_t chunk_index = 0;
+  // Loop bounded by numbers list consumption: each non-NUMBER chunk consumes 1 entry; NUMBER consumes 2 (len,value)
+  while (!control.eof() && (!numbers_in || number_pos < numbers_in->size())) {
+    if (control.eof()) break;
+    uint64_t type = control.readBits(3);
+    if (control.eof()) break;
     uint64_t transform = control.readBits(2);
-    uint64_t len       = 0;
-    if (!read_varint_bits(control, len))
-      break;
+    if (control.eof()) break;
+    if (type == CHUNK_NUMBER) {
+      if (!numbers_in || number_pos + 1 >= numbers_in->size()) {
+        fprintf(stderr, "[decompress] NUMBER chunk index=%zu numbers_pos=%zu need 2 entries size=%zu\n", chunk_index, number_pos, numbers_in?numbers_in->size():0);
+        return false;
+      }
+      uint64_t run_len = (*numbers_in)[number_pos++];
+      uint64_t value   = (*numbers_in)[number_pos++];
+      std::string digits;
+      if (value == 0) digits = "0"; else { while (value > 0) { digits.push_back(char('0' + (value % 10))); value /= 10; } std::reverse(digits.begin(), digits.end()); }
+      // Zero-pad to original run length
+      if (digits.size() < run_len) {
+        std::string padded(run_len - digits.size(), '0');
+        padded += digits;
+        digits.swap(padded);
+      }
+      for (char ch : digits) output.writeBits(uint8_t(ch), 8);
+      chunk_index++;
+      continue;
+    }
+    if (!numbers_in || number_pos >= numbers_in->size()) {
+      fprintf(stderr, "[decompress] Non-NUMBER chunk index=%zu type=%llu numbers_pos=%zu out-of-range (size=%zu)\n", chunk_index, (unsigned long long)type, number_pos, numbers_in?numbers_in->size():0);
+      return false;
+    }
+    uint64_t len = (*numbers_in)[number_pos++];
     if (type == CHUNK_UTF8_RUN) {
       for (uint64_t i = 0; i < len; ++i) {
-        if (utf8.eof())
+        if (utf8.eof()) {
+          fprintf(stderr, "[decompress] UTF8 eof early at chunk=%zu len=%llu i=%llu\n", chunk_index, (unsigned long long)len, (unsigned long long)i);
           return false;
+        }
         uint64_t b = utf8.readBits(8);
         output.writeBits(b, 8);
       }
-    } else {
-      std::vector<uint8_t> temp;
-      temp.reserve((size_t)len);
-      for (uint64_t i = 0; i < len; ++i) {
-        if (ascii.eof())
-          return false;
-        uint64_t b = ascii.readBits(8);
-        temp.push_back((uint8_t)b);
-      }
-      std::vector<uint8_t> outbuf;
-      if (type == CHUNK_BRACKETS || type == CHUNK_WIKI_HEADER ||
-          type == CHUNK_CURLY_BRACKETS) {
-        // restore wrapper after transform
-        if (transform == TRANSFORM_ALL_UPPER) {
-          for (auto &ch : temp)
-            if (ch >= 'a' && ch <= 'z')
-              ch = uint8_t(ch - 'a' + 'A');
-        } else if (transform == TRANSFORM_FIRST_UPPER) {
-          for (size_t i = 0; i < temp.size(); ++i) {
-            if (is_alpha(temp[i])) {
-              if (temp[i] >= 'a' && temp[i] <= 'z')
-                temp[i] = uint8_t(temp[i] - 'a' + 'A');
-              break;
-            }
-          }
-        }
-        if (type == CHUNK_BRACKETS) {
-          outbuf.push_back('[');
-          outbuf.push_back('[');
-          for (auto b : temp)
-            outbuf.push_back(b);
-          outbuf.push_back(']');
-          outbuf.push_back(']');
-        } else if (type == CHUNK_WIKI_HEADER) {
-          outbuf.push_back('=');
-          outbuf.push_back('=');
-          for (auto b : temp)
-            outbuf.push_back(b);
-          outbuf.push_back('=');
-          outbuf.push_back('=');
-        } else {
-          outbuf.push_back('{');
-          outbuf.push_back('{');
-          for (auto b : temp)
-            outbuf.push_back(b);
-          outbuf.push_back('}');
-          outbuf.push_back('}');
-        }
-      } else if (type == CHUNK_XML_TAG) {
-        size_t sep1 = 0;
-        while (sep1 < temp.size() && temp[sep1] != 0)
-          sep1++;
-        std::string tagName;
-        for (size_t i = 0; i < sep1; ++i)
-          tagName.push_back((char)temp[i]);
-        size_t sep2 = sep1 + 1;
-        while (sep2 < temp.size() && temp[sep2] != 0)
-          sep2++;
-        std::string attrs;
-        if (sep1 < temp.size() && sep1 < sep2 && sep2 <= temp.size()) {
-          for (size_t i = sep1 + 1; i < sep2; ++i)
-            attrs.push_back((char)temp[i]);
-        }
-        std::vector<uint8_t> content;
-        if (sep2 < temp.size() && temp[sep2] == 0) {
-          for (size_t i = sep2 + 1; i < temp.size(); ++i)
-            content.push_back(temp[i]);
-        }
-        if (transform == TRANSFORM_ALL_UPPER) {
-          for (auto &ch : content)
-            if (ch >= 'a' && ch <= 'z')
-              ch = uint8_t(ch - 'a' + 'A');
-        } else if (transform == TRANSFORM_FIRST_UPPER) {
-          for (size_t i = 0; i < content.size(); ++i) {
-            if (is_alpha(content[i])) {
-              if (content[i] >= 'a' && content[i] <= 'z')
-                content[i] = uint8_t(content[i] - 'a' + 'A');
-              break;
-            }
-          }
-        }
-        outbuf.push_back('<');
-        for (auto ch : tagName)
-          outbuf.push_back((uint8_t)ch);
-        for (auto ch : attrs)
-          outbuf.push_back((uint8_t)ch);
-        outbuf.push_back('>');
-        for (auto b : content)
-          outbuf.push_back(b);
-        outbuf.push_back('<');
-        outbuf.push_back('/');
-        for (auto ch : tagName)
-          outbuf.push_back((uint8_t)ch);
-        outbuf.push_back('>');
-      } else if (type == CHUNK_ASCII_SENTENCE) {
-        if (transform == TRANSFORM_ALL_UPPER) {
-          for (auto &ch : temp)
-            if (ch >= 'a' && ch <= 'z')
-              ch = uint8_t(ch - 'a' + 'A');
-        } else if (transform == TRANSFORM_FIRST_UPPER) {
-          for (size_t i = 0; i < temp.size(); ++i) {
-            if (is_alpha(temp[i])) {
-              if (temp[i] >= 'a' && temp[i] <= 'z')
-                temp[i] = uint8_t(temp[i] - 'a' + 'A');
-              break;
-            }
-          }
-        }
-        for (auto b : temp)
-          outbuf.push_back(b);
-        outbuf.push_back('.');
-      } else {
-        // RAW or others
-        if (transform == TRANSFORM_ALL_UPPER) {
-          for (auto &ch : temp)
-            if (ch >= 'a' && ch <= 'z')
-              ch = uint8_t(ch - 'a' + 'A');
-        } else if (transform == TRANSFORM_FIRST_UPPER) {
-          for (size_t i = 0; i < temp.size(); ++i) {
-            if (is_alpha(temp[i])) {
-              if (temp[i] >= 'a' && temp[i] <= 'z')
-                temp[i] = uint8_t(temp[i] - 'a' + 'A');
-              break;
-            }
-          }
-        }
-        outbuf.insert(outbuf.end(), temp.begin(), temp.end());
-      }
-      for (auto b : outbuf)
-        output.writeBits(b, 8);
+      chunk_index++;
+      continue;
     }
+    std::vector<uint8_t> temp;
+    temp.reserve((size_t)len);
+    for (uint64_t i = 0; i < len; ++i) {
+      if (ascii.eof()) {
+        fprintf(stderr, "[decompress] ASCII eof early at chunk=%zu type=%llu len=%llu i=%llu\n", chunk_index, (unsigned long long)type, (unsigned long long)len, (unsigned long long)i);
+        return false;
+      }
+      uint64_t b = ascii.readBits(8);
+      temp.push_back((uint8_t)b);
+    }
+    std::vector<uint8_t> outbuf;
+    if (type == CHUNK_BRACKETS || type == CHUNK_WIKI_HEADER || type == CHUNK_CURLY_BRACKETS) {
+      if (transform == TRANSFORM_ALL_UPPER) {
+        for (auto &ch : temp) if (ch >= 'a' && ch <= 'z') ch = uint8_t(ch - 'a' + 'A');
+      } else if (transform == TRANSFORM_FIRST_UPPER) {
+        for (size_t i = 0; i < temp.size(); ++i) { if (is_alpha(temp[i])) { if (temp[i] >= 'a' && temp[i] <= 'z') temp[i] = uint8_t(temp[i] - 'a' + 'A'); break; } }
+      }
+      if (type == CHUNK_BRACKETS) { outbuf.push_back('['); outbuf.push_back('['); for (auto b : temp) outbuf.push_back(b); outbuf.push_back(']'); outbuf.push_back(']'); }
+      else if (type == CHUNK_WIKI_HEADER) { outbuf.push_back('='); outbuf.push_back('='); for (auto b : temp) outbuf.push_back(b); outbuf.push_back('='); outbuf.push_back('='); }
+      else { outbuf.push_back('{'); outbuf.push_back('{'); for (auto b : temp) outbuf.push_back(b); outbuf.push_back('}'); outbuf.push_back('}'); }
+    } else if (type == CHUNK_XML_TAG) {
+      size_t sep1 = 0; while (sep1 < temp.size() && temp[sep1] != 0) sep1++;
+      std::string tagName; for (size_t i = 0; i < sep1; ++i) tagName.push_back((char)temp[i]);
+      size_t sep2 = sep1 + 1; while (sep2 < temp.size() && temp[sep2] != 0) sep2++;
+      std::string attrs; if (sep1 < temp.size() && sep1 < sep2 && sep2 <= temp.size()) { for (size_t i = sep1 + 1; i < sep2; ++i) attrs.push_back((char)temp[i]); }
+      std::vector<uint8_t> content; if (sep2 < temp.size() && temp[sep2] == 0) { for (size_t i = sep2 + 1; i < temp.size(); ++i) content.push_back(temp[i]); }
+      if (transform == TRANSFORM_ALL_UPPER) { for (auto &ch : content) if (ch >= 'a' && ch <= 'z') ch = uint8_t(ch - 'a' + 'A'); }
+      else if (transform == TRANSFORM_FIRST_UPPER) { for (size_t i = 0; i < content.size(); ++i) { if (is_alpha(content[i])) { if (content[i] >= 'a' && content[i] <= 'z') content[i] = uint8_t(content[i] - 'a' + 'A'); break; } } }
+      outbuf.push_back('<'); for (auto ch : tagName) outbuf.push_back((uint8_t)ch); for (auto ch : attrs) outbuf.push_back((uint8_t)ch); outbuf.push_back('>'); for (auto b : content) outbuf.push_back(b); outbuf.push_back('<'); outbuf.push_back('/'); for (auto ch : tagName) outbuf.push_back((uint8_t)ch); outbuf.push_back('>');
+    } else if (type == CHUNK_RAW) {
+      if (transform == TRANSFORM_ALL_UPPER) { for (auto &ch : temp) if (ch >= 'a' && ch <= 'z') ch = uint8_t(ch - 'a' + 'A'); }
+      else if (transform == TRANSFORM_FIRST_UPPER) { for (size_t i = 0; i < temp.size(); ++i) { if (is_alpha(temp[i])) { if (temp[i] >= 'a' && temp[i] <= 'z') temp[i] = uint8_t(temp[i] - 'a' + 'A'); break; } } }
+      outbuf.insert(outbuf.end(), temp.begin(), temp.end());
+    } else {
+      // Unknown (NUMBER handled earlier) => corruption
+      fprintf(stderr, "[decompress] Unknown chunk type=%llu at index=%zu\n", (unsigned long long)type, chunk_index);
+      return false;
+    }
+    for (auto b : outbuf) output.writeBits(b, 8);
+    chunk_index++;
   }
   output.flush();
+  if (numbers_in && number_pos != numbers_in->size()) {
+    // Remaining entries indicate truncation or mismatch
+    fprintf(stderr, "[decompress] numbers unused: consumed=%zu total=%zu (possible control truncation)\n", number_pos, numbers_in->size());
+  }
   return true;
 }

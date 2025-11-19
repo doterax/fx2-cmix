@@ -5,6 +5,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <fstream>
+#include "numbers_codec.hpp"
 
 static bool read_varint_file(FILE *f, uint64_t &v) {
   v         = 0;
@@ -62,14 +64,14 @@ int main(int argc, char **argv) {
     std::cerr << "open failed" << std::endl;
     return 1;
   }
-  uint64_t csz = 0, asz = 0, usz = 0;
+  uint64_t csz = 0, asz = 0, usz = 0, nsz = 0, ncount = 0;
   if (!read_varint_file(f, csz) || !read_varint_file(f, asz) ||
-      !read_varint_file(f, usz)) {
+      !read_varint_file(f, usz) || !read_varint_file(f, nsz) || !read_varint_file(f, ncount)) {
     fclose(f);
     std::cerr << "header failed" << std::endl;
     return 1;
   }
-  std::vector<uint8_t> control(csz), ascii(asz), utf8(usz);
+  std::vector<uint8_t> control(csz), ascii(asz), utf8(usz), numbersBytes(nsz);
   if (csz && fread(control.data(), 1, csz, f) != csz) {
     fclose(f);
     std::cerr << "read control failed" << std::endl;
@@ -85,34 +87,45 @@ int main(int argc, char **argv) {
     std::cerr << "read utf8 failed" << std::endl;
     return 1;
   }
+  if (nsz && fread(numbersBytes.data(), 1, nsz, f) != nsz) {
+    fclose(f);
+    std::cerr << "read numbers failed" << std::endl;
+    return 1;
+  }
   fclose(f);
-
-  std::cout << "control=" << csz << " ascii=" << asz << " utf8=" << usz << "\n";
+  std::cout << "control=" << csz << " ascii=" << asz << " utf8=" << usz << " numbers_bytes=" << nsz << " numbers_count=" << ncount << "\n";
+  std::vector<uint64_t> numbers;
+  if (!decode_numbers_gamma(numbersBytes, ncount, numbers) || numbers.size()!=ncount) {
+    std::cerr << "numbers gamma decode failed" << std::endl;
+    return 1;
+  }
+  // Verify roundtrip of gamma encoding
+  auto reenc = encode_numbers_gamma(numbers);
+  bool gamma_ok = (reenc.size()==numbersBytes.size() && std::equal(reenc.begin(), reenc.end(), numbersBytes.begin()));
+  std::cout << (gamma_ok?"numbers_gamma_roundtrip=OK":"numbers_gamma_roundtrip=FAIL") << "\n";
 
   BitStreamReaderVector cr(control);
   Stat                  stats[8];
   uint64_t              transformCount[4] = {0, 0, 0, 0};
   uint64_t              totalChunks = 0, totalBytes = 0;
 
-  while (!cr.eof()) {
-    uint64_t bitsBefore = cr.consumedBits();
-    uint64_t type       = cr.readBits(3);
-    uint64_t transform  = cr.readBits(2);
-    uint64_t len        = 0;
-    int      shift      = 0;
-    while (true) {
-      uint64_t b = cr.readBits(8);
-      len |= (b & 0x7F) << shift;
-      if ((b & 0x80) == 0)
-        break;
-      shift += 7;
+  size_t number_index = 0;
+  while (!cr.eof() && number_index < numbers.size()) {
+    uint64_t type      = cr.readBits(3);
+    uint64_t transform = cr.readBits(2);
+    uint64_t len = 0;
+    if (type == 1) { // NUMBER chunk consumes two entries: run_len then value
+      if (number_index + 1 >= numbers.size()) break; // malformed
+      uint64_t run_len = numbers[number_index++];
+      uint64_t value   = numbers[number_index++];
+      (void)run_len; (void)value; // no bytes accounted (digits reconstructed virtually)
+      len = 0;
+    } else {
+      if (number_index >= numbers.size()) break; // malformed
+      len = numbers[number_index++];
     }
-    uint64_t bitsAfter = cr.consumedBits();
-    uint64_t headerBits =
-        bitsAfter - bitsBefore; // includes type+transform+varint length bits
-    uint64_t headerBytes =
-        (headerBits + 7) /
-        8; // round up to whole bytes consumed from control stream
+    uint64_t headerBits  = 5; // fixed per chunk
+    uint64_t headerBytes = (headerBits + 7) / 8; // 1 byte accounting
     if (type > 7)
       type = 7;
     if (transform > 3)
@@ -159,7 +172,7 @@ int main(int argc, char **argv) {
     case 0:
       return "RAW";
     case 1:
-      return "ASCII_SENTENCE";
+      return "NUMBER";
     case 2:
       return "BRACKETS";
     case 3:
@@ -179,6 +192,7 @@ int main(int argc, char **argv) {
 
   std::cout << "chunks=" << totalChunks << " data_total=" << totalBytes
             << " (ascii+utf8=" << (asz + usz) << ")\n";
+  std::cout << "\nNumbers: gamma_bytes=" << nsz << " values=" << numbers.size() << "\n";
   // Table header
   std::cout << "\nChunk Statistics:\n";
   std::cout << "  " << std::left << std::setw(3) << "ID" << std::setw(16)

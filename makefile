@@ -39,6 +39,36 @@ $(OUT_DIR):
 $(OUT_DIR)/preprocess_chunked:
 	mkdir -p $(OUT_DIR)/preprocess_chunked
 
+# Chunked v2 experimental tools
+CHUNKED_DIR := src/preprocess_chunked_v2
+CHUNKED_OBJS := \
+	$(OUT_DIR)/preprocess_chunked/chunked_preprocessor_v2.o \
+	$(OUT_DIR)/preprocess_chunked/numbers_codec.o \
+	$(OUT_DIR)/preprocess_chunked/text_utils.o
+
+$(OUT_DIR)/preprocess_chunked/text_utils.o: $(CHUNKED_DIR)/text_utils.cpp $(CHUNKED_DIR)/text_utils.hpp | $(OUT_DIR)/preprocess_chunked
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c $(CHUNKED_DIR)/text_utils.cpp -o $(OUT_DIR)/preprocess_chunked/text_utils.o
+
+$(OUT_DIR)/preprocess_chunked/chunked_preprocessor_v2.o: $(CHUNKED_DIR)/chunked_preprocessor_v2.cpp $(CHUNKED_DIR)/chunked_preprocessor_v2.hpp | $(OUT_DIR)/preprocess_chunked
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c $(CHUNKED_DIR)/chunked_preprocessor_v2.cpp -o $(OUT_DIR)/preprocess_chunked/chunked_preprocessor_v2.o
+
+$(OUT_DIR)/preprocess_chunked/numbers_codec.o: $(CHUNKED_DIR)/numbers_codec.cpp $(CHUNKED_DIR)/numbers_codec.hpp | $(OUT_DIR)/preprocess_chunked
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c $(CHUNKED_DIR)/numbers_codec.cpp -o $(OUT_DIR)/preprocess_chunked/numbers_codec.o
+
+$(OUT_DIR)/preprocess_chunked/main_chunked.o: $(CHUNKED_DIR)/main.cpp $(CHUNKED_DIR)/chunked_preprocessor_v2.hpp $(CHUNKED_DIR)/numbers_codec.hpp | $(OUT_DIR)/preprocess_chunked
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c $(CHUNKED_DIR)/main.cpp -o $(OUT_DIR)/preprocess_chunked/main_chunked.o
+
+$(OUT_DIR)/preprocess_chunked/stats_v2.o: $(CHUNKED_DIR)/stats_v2.cpp $(CHUNKED_DIR)/numbers_codec.hpp | $(OUT_DIR)/preprocess_chunked
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c $(CHUNKED_DIR)/stats_v2.cpp -o $(OUT_DIR)/preprocess_chunked/stats_v2.o
+
+$(OUT_DIR)/preprocess_chunked/dump_v2.o: $(CHUNKED_DIR)/dump_v2.cpp $(CHUNKED_DIR)/numbers_codec.hpp | $(OUT_DIR)/preprocess_chunked
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c $(CHUNKED_DIR)/dump_v2.cpp -o $(OUT_DIR)/preprocess_chunked/dump_v2.o
+
+chunked-tools: $(CHUNKED_OBJS) $(OUT_DIR)/preprocess_chunked/main_chunked.o $(OUT_DIR)/preprocess_chunked/stats_v2.o $(OUT_DIR)/preprocess_chunked/dump_v2.o
+	$(CC) $(LFLAGS) $(CHUNKED_OBJS) $(OUT_DIR)/preprocess_chunked/main_chunked.o -o chunked_main.exe
+	$(CC) $(LFLAGS) $(CHUNKED_OBJS) $(OUT_DIR)/preprocess_chunked/stats_v2.o -o stats_v2.exe
+	$(CC) $(LFLAGS) $(CHUNKED_OBJS) $(OUT_DIR)/preprocess_chunked/dump_v2.o -o dump_v2.exe
+
 prof_gen: CPPFLAGS_PART-THAT-CAN-BE-SLOW    += -fprofile-generate=$(ROOT_DIR)/pgo_data
 prof_gen: CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -fprofile-generate=$(ROOT_DIR)/pgo_data
 prof_gen: LFLAGS                            += -fprofile-generate=$(ROOT_DIR)/pgo_data

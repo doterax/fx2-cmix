@@ -27,18 +27,43 @@ struct ChunkedV2Config {
   // Maximum number of inner bytes allowed for {{...}} before aborting
   uint32_t curly_brackets_max_span = 512;
 
-  // ASCII sentence detection cap (bytes before terminator)
-  uint32_t ascii_sentence_max_span = 512;
+  // Minimum digit run length to treat as NUMBER chunk (positive integer)
+  uint32_t min_number_len = 1;
+
+  // Do not split a current non-empty RAW context on encountering a NUMBER run
+  // unless at least this many bytes have already accumulated in the RAW
+  // context. This prevents fragmentation by short contexts.
+  uint32_t min_raw_context_before_number_split = 64;
+};
+
+// Unified context structs for (conceptual v3) compression/decompression
+struct ChunkedV3CompressionContext {
+  BitStreamReader       *input = nullptr;
+  BitStreamWriter       *control = nullptr;
+  BitStreamWriter       *ascii = nullptr;
+  BitStreamWriter       *utf8 = nullptr;
+  // Collected numbers: interleaved (chunk lengths + NUMBER values) FIFO
+  std::vector<uint64_t>  numbers;
+};
+
+struct ChunkedV3DecompressionContext {
+  BitStreamReader       *control = nullptr;
+  BitStreamReader       *ascii = nullptr;
+  BitStreamReader       *utf8 = nullptr;
+  BitStreamWriter       *output = nullptr;
+  std::vector<uint64_t>  numbers; // pre-decoded number list
+  size_t                 number_pos = 0; // consumption index
 };
 
 class ChunkedPreprocessorV2 {
 public:
-  // Stream-based API only (FILE* removed)
+  // Original interface retained (will internally use v3 context logic for NUMBER handling)
   static bool compress_stream(BitStreamReader &input, BitStreamWriter &control,
                               BitStreamWriter &ascii, BitStreamWriter &utf8,
-                              const ChunkedV2Config &cfg);
+                              const ChunkedV2Config &cfg, std::vector<uint64_t> *numbers_out = nullptr);
   static bool decompress_stream(BitStreamReader &control,
                                 BitStreamReader &ascii, BitStreamReader &utf8,
                                 BitStreamWriter       &output,
-                                const ChunkedV2Config &cfg);
+                                const ChunkedV2Config &cfg,
+                                const std::vector<uint64_t> *numbers_in = nullptr);
 };
