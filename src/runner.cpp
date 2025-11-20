@@ -9,6 +9,8 @@
 #include "coder/decoder.h"
 #include "coder/encoder.h"
 #include "predictor.h"
+#include "generic_predictor.h"
+#include "generic_full_predictor.h"
 #include "preprocess/preprocessor.h"
 
 #include "readalike_prepr/article_reorder.h"
@@ -25,7 +27,7 @@
 
 #include "PPMDPredictor.hpp"
 
-enum class EPredictorType { FULL, PPMD_ONLY };
+enum class EPredictorType { FULL, PPMD_ONLY, GENERIC };
 
 namespace {
 const int kMinVocabFileSize = 10000;
@@ -116,6 +118,22 @@ std::unique_ptr<IPredictor> CreatePPMdPredictor(const std::vector<bool> &vocab,
   return std::make_unique<PPMDPredictor>(ppmd_order, ppmd_mb);
 }
 
+// Generic predictor rebuilt from scratch (no use of Predictor class).
+std::unique_ptr<IPredictor> CreateGenericPredictor(const std::vector<bool> &vocab,
+                                                   int ppmd_order, int ppmd_mb) {
+  auto p = std::make_unique<GenericFullPredictor>(vocab, ppmd_order, ppmd_mb);
+  // Explicitly wire all components to reflect flexible initialization
+  p->InitFxcm();            // FXCM model
+  p->AddBracket();          // Bracket + related contexts
+  p->AddPPMD();             // Byte model (PPMD)
+  p->AddWord();             // Word-related models
+  p->AddMatch();            // Match models
+  p->AddDoubleIndirect();   // Double indirect models
+  p->SetAuxiliarySize(2);   // fxcm + byte_mixer
+  p->AddMixers();           // Mixers, layers, SSE
+  return p;
+}
+
 std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
                                             EPredictorType type, int ppmd_order,
                                             int ppmd_mb) {
@@ -123,6 +141,8 @@ std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
     return CreateFullPredictor(vocab, ppmd_order, ppmd_mb);
   } else if (type == EPredictorType::PPMD_ONLY) {
     return CreatePPMdPredictor(vocab, ppmd_order, ppmd_mb);
+  } else if (type == EPredictorType::GENERIC) {
+    return CreateGenericPredictor(vocab, ppmd_order, ppmd_mb);
   }
   throw std::invalid_argument("Unknown predictor type");
 }
@@ -372,8 +392,8 @@ int main(int argc, char **argv) {
 
   std::string predictor_name = "full";
   app.add_option("--predictor,-p", predictor_name,
-                 "Predictor type: 'full' (default) or 'ppmd'")
-      ->check(CLI::IsMember({"full", "ppmd"}));
+                 "Predictor type: 'full' (default), 'ppmd', or 'generic'")
+      ->check(CLI::IsMember({"full", "ppmd", "generic"}));
 
   // Subcommands
   std::string input_path;
@@ -481,6 +501,9 @@ int main(int argc, char **argv) {
   if (predictor_name == "ppmd") {
     predictor_type = EPredictorType::PPMD_ONLY;
     printf("Using predictor: PPMD only\n");
+  } else if (predictor_name == "generic") {
+    predictor_type = EPredictorType::GENERIC;
+    printf("Using predictor: Generic full predictor (explicit init)\n");
   } else {
     predictor_type = EPredictorType::FULL;
     printf("Using predictor: Full (all models)\n");
