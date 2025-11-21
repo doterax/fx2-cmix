@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <stdio.h>
 #include <string.h>
+#include <chrono>
 
 #include "CLI/CLI11.hpp"
 
@@ -176,6 +177,7 @@ void Compress(unsigned long long input_bytes, std::ifstream *is,
   FILE              *progress = fopen("./progress.log", "w");
   unsigned long long percent  = std::max(512ull, 1 + (input_bytes / 10000));
   ClearOutput();
+  auto start_tp = std::chrono::steady_clock::now();
   size_t buffer_size     = 1 * 256 * 1024;
   size_t bytes_remaining = (size_t)input_bytes;
   char  *buffer          = new char[buffer_size];
@@ -192,7 +194,25 @@ void Compress(unsigned long long input_bytes, std::ifstream *is,
     }
     if (pos % percent == 0) {
       double frac = 100.0 * pos / input_bytes;
-      fprintf(stderr, "\rprogress: %.2f%%", frac);
+      // Compute instantaneous rate and ETA
+      auto   now_tp          = std::chrono::steady_clock::now();
+      double elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(now_tp - start_tp).count();
+      unsigned long long processed_bytes = pos + 1; // bytes processed so far
+      double rate_bytes_per_sec          = (elapsed_seconds > 0.0) ? (processed_bytes / elapsed_seconds) : 0.0;
+      double eta_seconds                 = (rate_bytes_per_sec > 0.0)
+                                               ? (double)(input_bytes - processed_bytes) / rate_bytes_per_sec
+                                               : 0.0;
+      unsigned long long eta_total_secs  = (unsigned long long)(eta_seconds + 0.5);
+      unsigned long long eta_h           = eta_total_secs / 3600ull;
+      unsigned long long eta_m           = (eta_total_secs % 3600ull) / 60ull;
+      unsigned long long eta_s           = eta_total_secs % 60ull;
+      char                eta_buf[32];
+      if (eta_h == 0ull) {
+        snprintf(eta_buf, sizeof(eta_buf), "%02llu:%02llu", eta_m, eta_s);
+      } else {
+        snprintf(eta_buf, sizeof(eta_buf), "%llu:%02llu:%02llu", eta_h, eta_m, eta_s);
+      }
+      fprintf(stderr, "\rprogress: %.2f%% | rate: %1.2f bytes/s | ETA: %s     ", frac, rate_bytes_per_sec, eta_buf);
       fflush(stderr);
 
       fprintf(progress, "%.2f %zu\n", frac, e.OutputSize());
@@ -202,6 +222,9 @@ void Compress(unsigned long long input_bytes, std::ifstream *is,
   e.Flush();
   *output_bytes = os->tellp();
   delete[] buffer;
+  // Finish the progress line cleanly to avoid overlap with final summary
+  fprintf(stderr, "\n");
+  fflush(stderr);
 }
 
 void Decompress(unsigned long long output_length, std::ifstream *is,
@@ -221,6 +244,9 @@ void Decompress(unsigned long long output_length, std::ifstream *is,
       fflush(stderr);
     }
   }
+  // Finish the progress line cleanly to avoid overlap with final summary
+  fprintf(stderr, "\n");
+  fflush(stderr);
 }
 
 bool Store(const std::string &input_path, const std::string &temp_path,
