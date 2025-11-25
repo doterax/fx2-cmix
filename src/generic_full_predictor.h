@@ -58,6 +58,19 @@ public:
   void AddDoubleIndirect();
   void AddMixers();
   void SetAuxiliarySize(size_t sz) { auxiliary_size_ = sz; }
+  // Experimental: adaptively weight layer-0 mixer outputs
+  void EnableMixerWeighting(float alpha = 0.001f,
+                            float min_w = 0.05f,
+                            float max_w = 1.5f) {
+    mw_enabled_ = true;
+    mw_alpha_   = alpha;
+    mw_min_     = min_w;
+    mw_max_     = max_w;
+    if (mixer_0_.size() > 0) { // initialize immediately if mixers already built
+      mw_weights_.assign(mixer_0_.size(), 1.0f);
+      mw_last_probs_.assign(mixer_0_.size(), 0.5f);
+    }
+  }
 
 private:
   unsigned long long GetNumModels();
@@ -87,6 +100,14 @@ private:
   // Config
   int ppmd_order_  = 25;
   int ppmd_mem_mb_ = 1024;
+
+  // Mixer weighting state (experimental)
+  bool               mw_enabled_ = false;
+  float              mw_alpha_   = 0.001f;
+  float              mw_min_     = 0.05f;
+  float              mw_max_     = 1.5f;
+  std::vector<float> mw_weights_;
+  std::vector<float> mw_last_probs_;
 };
 
 #endif

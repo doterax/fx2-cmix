@@ -121,7 +121,11 @@ std::unique_ptr<IPredictor> CreatePPMdPredictor(const std::vector<bool> &vocab,
 
 // Generic predictor rebuilt from scratch (no use of Predictor class).
 std::unique_ptr<IPredictor> CreateGenericPredictor(const std::vector<bool> &vocab,
-                                                   int ppmd_order, int ppmd_mb) {
+                                                   int ppmd_order, int ppmd_mb,
+                                                   bool mw_enable,
+                                                   float mw_alpha,
+                                                   float mw_min,
+                                                   float mw_max) {
   auto p = std::make_unique<GenericFullPredictor>(vocab, ppmd_order, ppmd_mb);
   // Explicitly wire all components to reflect flexible initialization
   p->InitFxcm();            // FXCM model
@@ -132,18 +136,26 @@ std::unique_ptr<IPredictor> CreateGenericPredictor(const std::vector<bool> &voca
   p->AddDoubleIndirect();   // Double indirect models
   p->SetAuxiliarySize(2);   // fxcm + byte_mixer
   p->AddMixers();           // Mixers, layers, SSE
+  if (mw_enable) {
+    p->EnableMixerWeighting(mw_alpha, mw_min, mw_max);
+  }
   return p;
 }
 
 std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
                                             EPredictorType type, int ppmd_order,
-                                            int ppmd_mb) {
+                                            int ppmd_mb,
+                                            bool mw_enable,
+                                            float mw_alpha,
+                                            float mw_min,
+                                            float mw_max) {
   if (type == EPredictorType::FULL) {
     return CreateFullPredictor(vocab, ppmd_order, ppmd_mb);
   } else if (type == EPredictorType::PPMD_ONLY) {
     return CreatePPMdPredictor(vocab, ppmd_order, ppmd_mb);
   } else if (type == EPredictorType::GENERIC) {
-    return CreateGenericPredictor(vocab, ppmd_order, ppmd_mb);
+    return CreateGenericPredictor(vocab, ppmd_order, ppmd_mb,
+                                  mw_enable, mw_alpha, mw_min, mw_max);
   }
   throw std::invalid_argument("Unknown predictor type");
 }
@@ -277,7 +289,11 @@ bool RunCompression(EPredictorType predictor_type, bool enable_preprocess,
                     const std::string &output_path, FILE *dictionary,
                     unsigned long long *input_bytes,
                     unsigned long long *output_bytes, int ppmd_order,
-                    int ppmd_mb) {
+                    int ppmd_mb,
+                    bool mw_enable,
+                    double mw_alpha,
+                    double mw_min,
+                    double mw_max) {
   FILE *data_in = fopen(input_path.c_str(), "rb");
   if (!data_in)
     return false;
@@ -321,7 +337,8 @@ bool RunCompression(EPredictorType predictor_type, bool enable_preprocess,
   }
 
   WriteHeader(temp_bytes, vocab, dictionary != NULL, &data_out);
-  auto p = CreatePredictor(vocab, predictor_type, ppmd_order, ppmd_mb);
+  auto p = CreatePredictor(vocab, predictor_type, ppmd_order, ppmd_mb,
+                           mw_enable, (float)mw_alpha, (float)mw_min, (float)mw_max);
   if (enable_preprocess)
     preprocessor::Pretrain(p.get(), dictionary);
   Compress(temp_bytes, &temp_in, &data_out, output_bytes, p.get());
@@ -337,7 +354,11 @@ bool RunDecompression(EPredictorType     predictor_type,
                       const std::string &output_path, FILE *dictionary,
                       unsigned long long *input_bytes,
                       unsigned long long *output_bytes, int ppmd_order,
-                      int ppmd_mb) {
+                      int ppmd_mb,
+                      bool mw_enable,
+                      double mw_alpha,
+                      double mw_min,
+                      double mw_max) {
   std::ifstream data_in(input_path, std::ios::in | std::ios::binary);
   if (!data_in.is_open())
     return false;
@@ -371,7 +392,8 @@ bool RunDecompression(EPredictorType     predictor_type,
     fclose(data_out);
     return true;
   }
-  auto p = CreatePredictor(vocab, predictor_type, ppmd_order, ppmd_mb);
+  auto p = CreatePredictor(vocab, predictor_type, ppmd_order, ppmd_mb,
+                           mw_enable, (float)mw_alpha, (float)mw_min, (float)mw_max);
   if (dictionary_used)
     preprocessor::Pretrain(p.get(), dictionary);
 
@@ -420,6 +442,20 @@ int main(int argc, char **argv) {
   app.add_option("--predictor,-p", predictor_name,
                  "Predictor type: 'full' (default), 'ppmd', or 'generic'")
       ->check(CLI::IsMember({"full", "ppmd", "generic"}));
+
+    // Experimental: mixer weighting controls (apply to 'generic')
+    bool  mw_enable = false;
+    double mw_alpha = 0.001;
+    double mw_min   = 0.05;
+    double mw_max   = 1.5;
+    app.add_flag("--mw-enable", mw_enable,
+           "Enable adaptive weighting of layer-0 mixer outputs (generic)");
+    app.add_option("--mw-alpha", mw_alpha, "EMA alpha for mixer weighting")
+      ->check(CLI::Range(1e-6, 0.5));
+    app.add_option("--mw-min", mw_min, "Minimum mixer weight")
+      ->check(CLI::Range(0.0, 10.0));
+    app.add_option("--mw-max", mw_max, "Maximum mixer weight")
+      ->check(CLI::Range(0.0, 10.0));
 
   // Subcommands
   std::string input_path;
@@ -565,8 +601,8 @@ int main(int argc, char **argv) {
     dictionary  = fopen(".dict", "rb"); //_decomp
 
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
-                          dictionary, &input_bytes, &output_bytes, ppmd_order,
-                          ppmd_mb)) {
+                dictionary, &input_bytes, &output_bytes, ppmd_order,
+                ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max)) {
       fprintf(stderr, "Error: Enwik9 decompression failed\n");
       return 1;
     }
@@ -600,8 +636,8 @@ int main(int argc, char **argv) {
   else if (compress_mode || no_preprocess_mode) {
     remove(".dict");
     if (!RunCompression(predictor_type, enable_preprocess, input_path,
-                        temp_path, output_path, dictionary, &input_bytes,
-                        &output_bytes, ppmd_order, ppmd_mb)) {
+              temp_path, output_path, dictionary, &input_bytes,
+              &output_bytes, ppmd_order, ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max)) {
       fprintf(stderr, "Error: Compression failed\n");
       return 1;
     }
@@ -632,8 +668,8 @@ int main(int argc, char **argv) {
     temp_path              = output_path + ".cmix.temp";
     dictionary             = fopen(".dict", "rb");
     if (!RunCompression(predictor_type, enable_preprocess, input_path,
-                        temp_path, output_path, dictionary, &input_bytes,
-                        &output_bytes, ppmd_order, ppmd_mb)) {
+              temp_path, output_path, dictionary, &input_bytes,
+              &output_bytes, ppmd_order, ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max)) {
       fprintf(stderr, "Error: Enwik9 compression failed\n");
       return 1;
     }
@@ -666,8 +702,8 @@ int main(int argc, char **argv) {
   else if (extract_mode) {
     dictionary = fopen(".dict", "rb");
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
-                          dictionary, &input_bytes, &output_bytes, ppmd_order,
-                          ppmd_mb)) {
+                dictionary, &input_bytes, &output_bytes, ppmd_order,
+                ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max)) {
       fprintf(stderr, "Error: Extract operation failed\n");
       return 1;
     }
@@ -677,8 +713,8 @@ int main(int argc, char **argv) {
   // Handle decompress mode
   else if (decompress_mode) {
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
-                          dictionary, &input_bytes, &output_bytes, ppmd_order,
-                          ppmd_mb)) {
+                dictionary, &input_bytes, &output_bytes, ppmd_order,
+                ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max)) {
       fprintf(stderr, "Error: Decompression failed\n");
       return 1;
     }

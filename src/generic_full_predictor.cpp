@@ -162,6 +162,11 @@ void GenericFullPredictor::AddMixers() {
   AddMixer(1, manager_.zero_context_, 0.0003);
 
   layers_[0].SetExtraInputSize(mixer_0_.size());
+
+  if (mw_enabled_) {
+    mw_weights_.assign(mixer_0_.size(), 1.0f);
+    mw_last_probs_.assign(mixer_0_.size(), 0.5f);
+  }
 }
 
 extern int   lstmpr, lstmex;
@@ -226,9 +231,18 @@ float GenericFullPredictor::Predict() {
   manager_.auxiliary_context_ = auxiliary_average * 15;
 
   for (unsigned int i = 0; i < mixer_0_.size(); ++i) {
-    float p = mixer_0_[i].Mix();
-    layers_[0].SetExtraInput(i, p);
-    layers_[1].SetStretchedInput(i, p);
+    float logit = mixer_0_[i].Mix();
+    if (mw_enabled_) {
+      if (mw_weights_.size() != mixer_0_.size()) { // late initialization safety
+        mw_weights_.assign(mixer_0_.size(), 1.0f);
+        mw_last_probs_.assign(mixer_0_.size(), 0.5f);
+      }
+      float prob = Sigmoid::Logistic(logit);
+      mw_last_probs_[i] = prob;
+    }
+    float scaled_logit = mw_enabled_ ? (logit * mw_weights_[i]) : logit;
+    layers_[0].SetExtraInput(i, scaled_logit);
+    layers_[1].SetStretchedInput(i, scaled_logit);
   }
   layers_[1].SetStretchedInput(mixer_0_.size(),
                                layers_[0].Inputs()[fxcm_model_index]);
@@ -271,6 +285,16 @@ void GenericFullPredictor::Perceive(int bit) {
   }
 
   sse_.Perceive(bit);
+
+  if (mw_enabled_) {
+    for (size_t i = 0; i < mw_weights_.size(); ++i) {
+      float err     = std::fabs((float)bit - mw_last_probs_[i]);
+      float quality = 1.0f - err;
+      mw_weights_[i] = mw_weights_[i] * (1.0f - mw_alpha_) + mw_alpha_ * quality;
+      if (mw_weights_[i] < mw_min_) mw_weights_[i] = mw_min_;
+      if (mw_weights_[i] > mw_max_) mw_weights_[i] = mw_max_;
+    }
+  }
 
   bool byte_update = false;
   if (manager_.bit_context_ >= 128)

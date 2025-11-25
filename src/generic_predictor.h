@@ -58,6 +58,15 @@ public:
       return *this;
     }
     Builder& setSigmoidTableSize(int size) { sigmoid_size_ = size; return *this; }
+    Builder& enableSourceWeighting(float alpha = 0.001f, float min_w = 0.05f,
+                                   float max_w = 1.5f, bool duplicate_input = true) {
+      weighting_enabled_ = true;
+      weight_alpha_ = alpha;
+      min_weight_ = min_w;
+      max_weight_ = max_w;
+      duplicate_weighted_input_ = duplicate_input;
+      return *this;
+    }
     std::unique_ptr<GenericPredictor> build();
   private:
     std::vector<Source> sources_;
@@ -65,6 +74,12 @@ public:
     int num_layers_ = 2;
     int sigmoid_size_ = 100001;
     LstmSpec lstm_spec_{};
+    // Source weighting config
+    bool weighting_enabled_ = true;
+    bool duplicate_weighted_input_ = true; // if true feed both raw and weighted
+    float weight_alpha_ = 0.001f;
+    float min_weight_ = 0.05f;
+    float max_weight_ = 1.5f;
   };
 
   float Predict() override;
@@ -75,7 +90,9 @@ public:
 
 private:
   GenericPredictor(std::vector<Source> sources, std::vector<MixerSpec> mixers,
-                   int num_layers, int sigmoid_size, LstmSpec lstm_spec);
+                   int num_layers, int sigmoid_size, LstmSpec lstm_spec,
+                   bool weighting_enabled, bool duplicate_weighted_input,
+                   float weight_alpha, float min_weight, float max_weight);
 
   std::vector<Source> sources_;
   std::vector<MixerSpec> mixer_specs_;
@@ -86,6 +103,14 @@ private:
   SSE sse_;
   LstmSpec lstm_spec_{};
   std::unique_ptr<Lstm> lstm_;
+  // Source weighting state
+  bool weighting_enabled_ = false;
+  bool duplicate_weighted_input_ = true;
+  float weight_alpha_ = 0.001f;
+  float min_weight_ = 0.05f;
+  float max_weight_ = 1.5f;
+  std::vector<float> source_weights_;      // adaptive weights per source
+  std::vector<float> last_source_probs_;   // last raw probability per source
 };
 
 #endif // GENERIC_PREDICTOR_H
