@@ -743,11 +743,12 @@ print_end_message:
   double bits_per_second     = (8.0 * (double)input_bytes) / (seconds);
   double nanoseconds_per_bit = (seconds * 1e9) / (8.0 * (double)input_bytes);
   double compression_ratio = 100.0 * (double)output_bytes / (double)input_bytes;
+  double comp_factor = (double)input_bytes / (double)output_bytes;
   printf(
       "\r%lld bytes -> %lld bytes in %1.2f s.\nSpeed: %1.2f bits/s (%1.2f "
-      "bytes/s). %1.2f ns/bit\nCompression ratio: %1.5f%\n",
+      "bytes/s). %1.2f ns/bit\nCompression ratio: %1.5f%%\nCompr.Factor:      %1.5f\n",
       input_bytes, output_bytes, seconds, bits_per_second,
-      bits_per_second / 8.0, nanoseconds_per_bit, compression_ratio);
+      bits_per_second / 8.0, nanoseconds_per_bit, compression_ratio, comp_factor);
 
   return 0;
 }
