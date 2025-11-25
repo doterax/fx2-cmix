@@ -4,7 +4,6 @@
 #include "context-manager.h"
 #include "contexts/bit-context.h"
 #include "contexts/bracket-context.h"
-#include "contexts/combined-context.h"
 #include "contexts/context-hash.h"
 #include "contexts/indirect-hash.h"
 #include "contexts/interval-hash.h"

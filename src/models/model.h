@@ -4,18 +4,22 @@
 #include <Eigen/Core>
 
 class Model {
- public:
+protected:
   Model() : outputs_(Eigen::VectorXf::Constant(1, 0.5)) {}
   Model(int size) : outputs_(Eigen::VectorXf::Constant(size, 0.5)) {}
-  ~Model() {}
-  const Eigen::VectorXf& Predict() const {return outputs_;}
-  unsigned int NumOutputs() {return outputs_.size();}
-  void Perceive(int bit) {}
-  void ByteUpdate() {}
 
- protected:
+public:
+  const Eigen::VectorXf &Predict() const { return outputs_; }
+  unsigned int           NumOutputs() { return outputs_.size(); }
+
+public:
+  virtual ~Model()               = default;
+
+  virtual void Perceive(int bit) = 0;
+  virtual void ByteUpdate()      = 0;
+
+protected:
   mutable Eigen::VectorXf outputs_;
 };
 
 #endif
-

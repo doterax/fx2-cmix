@@ -103,9 +103,6 @@ $(OUT_DIR)/bit-context.o: src/contexts/bit-context.cpp src/contexts/bit-context.
 $(OUT_DIR)/bracket-context.o: src/contexts/bracket-context.cpp src/contexts/bracket-context.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/contexts/bracket-context.cpp -o $(OUT_DIR)/bracket-context.o
 
-$(OUT_DIR)/combined-context.o: src/contexts/combined-context.cpp src/contexts/combined-context.h | $(OUT_DIR)
-	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/contexts/combined-context.cpp -o $(OUT_DIR)/combined-context.o
-
 $(OUT_DIR)/context-hash.o: src/contexts/context-hash.cpp src/contexts/context-hash.h | $(OUT_DIR)
 	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -c src/contexts/context-hash.cpp -o $(OUT_DIR)/context-hash.o
 
@@ -186,20 +183,20 @@ $(OUT_DIR)/generic_full_predictor.o: src/generic_full_predictor.cpp src/generic_
 
 slow: $(OUT_DIR)/preprocessor.o $(OUT_DIR)/dictionary.o
 
-fast: $(OUT_DIR)/decoder.o $(OUT_DIR)/encoder.o $(OUT_DIR)/random.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/bit-context.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/sparse.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/indirect.o $(OUT_DIR)/match.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/run-map.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sse.o $(OUT_DIR)/predictor.o $(OUT_DIR)/generic_predictor.o $(OUT_DIR)/generic_full_predictor.o $(OUT_DIR)/runner.o
+fast: $(OUT_DIR)/decoder.o $(OUT_DIR)/encoder.o $(OUT_DIR)/random.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/bit-context.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/sparse.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/indirect.o $(OUT_DIR)/match.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/run-map.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sse.o $(OUT_DIR)/predictor.o $(OUT_DIR)/generic_predictor.o $(OUT_DIR)/generic_full_predictor.o $(OUT_DIR)/runner.o
 
 # Production build (default: full optimizations + LTO)
 # Ensure even traditionally "slow" objects are compiled with fast flags for cmix
 cmix-prod: CPPFLAGS_PART-THAT-CAN-BE-SLOW := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
 cmix-prod: fast slow
-	$(CC) $(LFLAGS) $(OUT_DIR)/bit-context.o $(OUT_DIR)/random.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/decoder.o $(OUT_DIR)/dictionary.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/encoder.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/indirect.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/match.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/predictor.o $(OUT_DIR)/generic_predictor.o $(OUT_DIR)/generic_full_predictor.o $(OUT_DIR)/preprocessor.o $(OUT_DIR)/run-map.o $(OUT_DIR)/runner.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sparse.o $(OUT_DIR)/sse.o -o cmix.exe
+	$(CC) $(LFLAGS) $(OUT_DIR)/bit-context.o $(OUT_DIR)/random.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/decoder.o $(OUT_DIR)/dictionary.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/encoder.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/indirect.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/match.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/predictor.o $(OUT_DIR)/generic_predictor.o $(OUT_DIR)/generic_full_predictor.o $(OUT_DIR)/preprocessor.o $(OUT_DIR)/run-map.o $(OUT_DIR)/runner.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sparse.o $(OUT_DIR)/sse.o -o cmix.exe
 
 # Profile build (full optimizations + debug symbols for VTune/perf/gprof)
 cmix-profile: CPPFLAGS_PART-THAT-CAN-BE-SLOW := $(CPPFLAGS_PROFILE_SLOW)
 cmix-profile: CPPFLAGS_PART-THAT-SHOULD-BE-FAST := $(CPPFLAGS_PROFILE_FAST)
 cmix-profile: LFLAGS := $(LFLAGS_PROFILE)
 cmix-profile: clean fast slow
-	$(CC) $(LFLAGS_PROFILE) $(OUT_DIR)/bit-context.o $(OUT_DIR)/random.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/combined-context.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/decoder.o $(OUT_DIR)/dictionary.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/encoder.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/indirect.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/match.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/predictor.o $(OUT_DIR)/generic_predictor.o $(OUT_DIR)/generic_full_predictor.o $(OUT_DIR)/preprocessor.o $(OUT_DIR)/run-map.o $(OUT_DIR)/runner.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sparse.o $(OUT_DIR)/sse.o -o cmix.exe
+	$(CC) $(LFLAGS_PROFILE) $(OUT_DIR)/bit-context.o $(OUT_DIR)/random.o $(OUT_DIR)/bracket-context.o $(OUT_DIR)/bracket.o $(OUT_DIR)/byte-mixer.o $(OUT_DIR)/byte-model.o $(OUT_DIR)/context-hash.o $(OUT_DIR)/context-manager.o $(OUT_DIR)/decoder.o $(OUT_DIR)/dictionary.o $(OUT_DIR)/direct-hash.o $(OUT_DIR)/direct.o $(OUT_DIR)/encoder.o $(OUT_DIR)/indirect-hash.o $(OUT_DIR)/indirect.o $(OUT_DIR)/interval-hash.o $(OUT_DIR)/interval.o $(OUT_DIR)/match.o $(OUT_DIR)/mixer-input.o $(OUT_DIR)/mixer.o $(OUT_DIR)/nonstationary.o $(OUT_DIR)/fxcmv1.o $(OUT_DIR)/ppmd.o $(OUT_DIR)/predictor.o $(OUT_DIR)/generic_predictor.o $(OUT_DIR)/generic_full_predictor.o $(OUT_DIR)/preprocessor.o $(OUT_DIR)/run-map.o $(OUT_DIR)/runner.o $(OUT_DIR)/sigmoid.o $(OUT_DIR)/sparse.o $(OUT_DIR)/sse.o -o cmix.exe
 
 # Keep old 'cmix' target for backward compatibility (defaults to production)
 cmix: cmix-prod test-utf8-preprocess
