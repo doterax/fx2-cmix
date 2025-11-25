@@ -27,7 +27,6 @@
 #include "models/ppmd.h"
 
 #include "ds/SmallVector.h"
-#include "ds/emhash_set.hpp"
 
 #include <memory>
 #include <optional>

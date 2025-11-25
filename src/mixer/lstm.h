@@ -8,7 +8,6 @@
 
 #include "lstm-layer.h"
 
-#include "../ds/emhash_set.hpp"
 #include "../ds/SmallVector.h"
 
 class Lstm {
