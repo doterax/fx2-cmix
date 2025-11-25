@@ -18,11 +18,11 @@ struct NeuronLayer {
     beta_m_(Eigen::VectorXf::Zero(num_cells)),
     beta_v_(Eigen::VectorXf::Zero(num_cells)),
     weights_(Eigen::MatrixXf::Zero(num_cells, input_size)),
-    state_(horizon, Eigen::VectorXf::Zero(num_cells)),
     update_(Eigen::MatrixXf::Zero(num_cells, input_size)),
     m_(Eigen::MatrixXf::Zero(num_cells, input_size)),
     v_(Eigen::MatrixXf::Zero(num_cells, input_size)),
     recurrent_weights_(Eigen::MatrixXf::Zero(num_cells, input_size - offset)),
+    state_(horizon, Eigen::VectorXf::Zero(num_cells)),
     norm_(horizon, Eigen::VectorXf::Zero(num_cells)) {};
 
   Eigen::VectorXf error_, ivar_, gamma_, gamma_u_, gamma_m_, gamma_v_,

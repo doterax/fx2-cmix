@@ -40,14 +40,14 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  FILE *input = std::fopen(input_path, "rb");
-  if (!input) {
+  FILE *input = nullptr;
+  if (fopen_s(&input, input_path, "rb") != 0 || !input) {
     std::fprintf(stderr, "Error: Cannot open input file: %s\n", input_path);
     return 1;
   }
 
-  FILE *output = std::fopen(output_path, "wb");
-  if (!output) {
+  FILE *output = nullptr;
+  if (fopen_s(&output, output_path, "wb") != 0 || !output) {
     std::fprintf(stderr, "Error: Cannot create output file: %s\n", output_path);
     std::fclose(input);
     return 1;

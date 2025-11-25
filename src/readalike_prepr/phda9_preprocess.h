@@ -37,7 +37,11 @@ FILE* tmpfile2(void){
     if (f==NULL) unlink(filename);
     return f;
 #else
-    f=tmpfile();  // temporary file
+    f=nullptr;  // temporary file
+    if(tmpfile_s(&f)!=0 || !f) {
+        fprintf(stderr, "Error: Cannot create temporary file\n");
+        return NULL;
+    }
     if (!f) return NULL;
     return f;
 #endif
@@ -827,9 +831,21 @@ void encode_txt_wit(FILE* in, FILE* out) {
 
 
 bool cat(char const * filename_from1, char const * filename_from2, char const * filename_to) {
-  FILE* ifile1 = fopen(filename_from1, "rb");
-  FILE* ifile2 = fopen(filename_from2, "rb");
-  FILE* ofile = fopen(filename_to, "wb");
+  FILE* ifile1 = nullptr;
+  if (fopen_s(&ifile1, filename_from1, "rb") != 0 || !ifile1) {
+    fprintf(stderr, "Error: Cannot open file for reading: %s\n", filename_from1);
+    abort();
+  }
+  FILE* ifile2 = nullptr;
+  if (fopen_s(&ifile2, filename_from2, "rb") != 0 || !ifile2) {
+    fprintf(stderr, "Error: Cannot open file for reading: %s\n", filename_from2);
+    abort();
+  }
+  FILE* ofile = nullptr;
+  if (fopen_s(&ofile, filename_to, "wb") != 0 || !ofile) {
+    fprintf(stderr, "Error: Cannot open file for writing: %s\n", filename_to);
+    abort();
+  }
   
   do {
     int c=getc(ifile1);
@@ -852,10 +868,17 @@ bool cat(char const * filename_from1, char const * filename_from2, char const * 
 
 int phda9_prepr() {
    // open files
-  FILE *in=fopen(".main_reordered", "rb");
+  FILE *in=nullptr;
+  if (fopen_s(&in, ".main_reordered", "rb") != 0 || !in) {
+    fprintf(stderr, "Error: Cannot open file for reading: %s\n", ".main_reordered");
+    abort();
+  }
   //if (!in)  exit(1);
-  FILE *out=fopen(".main_phda9prepr", "wb");
-  //if (!out)  exit(1);
+  FILE *out=nullptr;
+  if (fopen_s(&out, ".main_phda9prepr", "wb") != 0 || !out) {
+    fprintf(stderr, "Error: Cannot open file for writing: %s\n", ".main_phda9prepr");
+    abort();
+  }
 
   // process file
   encode_txt_wit(in,out);
@@ -866,10 +889,17 @@ int phda9_prepr() {
 
 int phda9_resto() {
     
-  FILE *in=fopen(".main_decomp", "rb");
+  FILE *in=nullptr;
+  if (fopen_s(&in, ".main_decomp", "rb") != 0 || !in) {
+    fprintf(stderr, "Error: Cannot open file for reading: %s\n", ".main_decomp");
+    abort();
+  }
   //if (!in)  exit(1);
-  FILE *out=fopen(".main_decomp_restored", "wb");
-  //if (!out)  exit(1);
+  FILE *out=nullptr;
+  if (fopen_s(&out, ".main_decomp_restored", "wb") != 0 || !out) {
+    fprintf(stderr, "Error: Cannot open file for writing: %s\n", ".main_decomp_restored");
+    abort();
+  }
 
   // get size
   fseek(in, 0, SEEK_END);

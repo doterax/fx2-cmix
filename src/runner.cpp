@@ -36,8 +36,8 @@ const int kMinVocabFileSize = 10000;
 
 size_t getFileSize(const std::string &path) {
   // // get the size of the output file
-  FILE *f = fopen(path.c_str(), "rb");
-  if (f == NULL) {
+  FILE *f = nullptr;
+  if (fopen_s(&f, path.c_str(), "rb") != 0 || !f) {
     printf("can't open file for measuring its size");
     return 0;
   }
@@ -186,7 +186,10 @@ void Compress(unsigned long long input_bytes, std::ifstream *is,
               IPredictor *p) {
   Encoder            e(os, p);
 
-  FILE              *progress = fopen("./progress.log", "w");
+  FILE              *progress = nullptr;
+  if (fopen_s(&progress, "./progress.log", "w") != 0 || !progress) {
+    abort();
+  }
   unsigned long long percent  = std::max(512ull, 1 + (input_bytes / 10000));
   ClearOutput();
   auto start_tp = std::chrono::steady_clock::now();
@@ -264,11 +267,11 @@ void Decompress(unsigned long long output_length, std::ifstream *is,
 bool Store(const std::string &input_path, const std::string &temp_path,
            const std::string &output_path, FILE *dictionary,
            unsigned long long *input_bytes, unsigned long long *output_bytes) {
-  FILE *data_in = fopen(input_path.c_str(), "rb");
-  if (!data_in)
+  FILE *data_in = nullptr;
+  if (fopen_s(&data_in, input_path.c_str(), "rb") != 0 || !data_in)
     return false;
-  FILE *data_out = fopen(output_path.c_str(), "wb");
-  if (!data_out)
+  FILE *data_out = nullptr;
+  if (fopen_s(&data_out, output_path.c_str(), "wb") != 0 || !data_out)
     return false;
   fseek(data_in, 0L, SEEK_END);
   *input_bytes = ftell(data_in);
@@ -294,11 +297,11 @@ bool RunCompression(EPredictorType predictor_type, bool enable_preprocess,
                     double mw_alpha,
                     double mw_min,
                     double mw_max) {
-  FILE *data_in = fopen(input_path.c_str(), "rb");
-  if (!data_in)
+  FILE *data_in = nullptr;
+  if (fopen_s(&data_in, input_path.c_str(), "rb") != 0 || !data_in)
     return false;
-  FILE *temp_out = fopen(temp_path.c_str(), "wb");
-  if (!temp_out)
+  FILE *temp_out = nullptr;
+  if (fopen_s(&temp_out, temp_path.c_str(), "wb") != 0 || !temp_out)
     return false;
 
   fseek(data_in, 0L, SEEK_END);
@@ -376,11 +379,11 @@ bool RunDecompression(EPredictorType     predictor_type,
 
   if (*output_bytes == 0) { // undo store
     data_in.close();
-    FILE *in = fopen(input_path.c_str(), "rb");
-    if (!in)
+    FILE *in = nullptr;
+    if (fopen_s(&in, input_path.c_str(), "rb") != 0 || !in)
       return false;
-    FILE *data_out = fopen(output_path.c_str(), "wb");
-    if (!data_out)
+    FILE *data_out = nullptr;
+    if (fopen_s(&data_out, output_path.c_str(), "wb") != 0 || !data_out)
       return false;
     fseek(in, 5L, SEEK_SET);
     fprintf(stderr, "\rdecoding...");
@@ -405,11 +408,11 @@ bool RunDecompression(EPredictorType     predictor_type,
   data_in.close();
   temp_out.close();
 
-  FILE *temp_in = fopen(temp_path.c_str(), "rb");
-  if (!temp_in)
+  FILE *temp_in = nullptr;
+  if (fopen_s(&temp_in, temp_path.c_str(), "rb") != 0 || !temp_in)
     return false;
-  FILE *data_out = fopen(output_path.c_str(), "wb");
-  if (!data_out)
+  FILE *data_out = nullptr;
+  if (fopen_s(&data_out, output_path.c_str(), "wb") != 0 || !data_out)
     return false;
 
   preprocessor::Decode(temp_in, data_out, dictionary);
@@ -577,8 +580,8 @@ int main(int argc, char **argv) {
   FILE   *dictionary        = nullptr;
 
   if (!dictionary_path.empty()) {
-    dictionary = fopen(dictionary_path.c_str(), "rb");
-    if (!dictionary) {
+    dictionary = nullptr;
+    if (fopen_s(&dictionary, dictionary_path.c_str(), "rb") != 0 || !dictionary) {
       fprintf(stderr, "Error: Cannot open dictionary file: %s\n",
               dictionary_path.c_str());
       return 1;
@@ -598,7 +601,12 @@ int main(int argc, char **argv) {
     std::cout << "Running cmix decompression..." << std::endl;
     input_path  = ".ready4cmix_decomp";
     output_path = ".input_decomp";
-    dictionary  = fopen(".dict", "rb"); //_decomp
+    dictionary  = nullptr;
+    if (fopen_s(&dictionary, ".dict", "rb") != 0 || !dictionary) {
+      fprintf(stderr, "Error: Cannot open dictionary file for enwik9 decompress: %s\n",
+              ".dict");
+      abort();
+    }
 
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
                 dictionary, &input_bytes, &output_bytes, ppmd_order,
@@ -666,7 +674,12 @@ int main(int argc, char **argv) {
     std::string orig_input = input_path;
     input_path             = ".ready4cmix";
     temp_path              = output_path + ".cmix.temp";
-    dictionary             = fopen(".dict", "rb");
+    dictionary             = nullptr;
+    if (fopen_s(&dictionary, ".dict", "rb") != 0 || !dictionary) {
+      fprintf(stderr, "Error: Cannot open dictionary file for enwik9 compress: %s\n",
+              ".dict");
+      abort();
+    }
     if (!RunCompression(predictor_type, enable_preprocess, input_path,
               temp_path, output_path, dictionary, &input_bytes,
               &output_bytes, ppmd_order, ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max)) {
@@ -700,7 +713,12 @@ int main(int argc, char **argv) {
 
   // Handle extract mode
   else if (extract_mode) {
-    dictionary = fopen(".dict", "rb");
+    dictionary = nullptr;
+    if (fopen_s(&dictionary, ".dict", "rb") != 0 || !dictionary) {
+      fprintf(stderr, "Error: Cannot open dictionary file for extract: %s\n",
+              ".dict");
+      abort();
+    }
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
                 dictionary, &input_bytes, &output_bytes, ppmd_order,
                 ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max)) {

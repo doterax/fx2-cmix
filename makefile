@@ -21,13 +21,13 @@ endif
 CPPFLAGS_PROFILE_SLOW  := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
 CPPFLAGS_PROFILE_FAST  := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
 CPPFLAGS_PROFILE_SLOW  += -g -Os -fdata-sections -ffunction-sections
-CPPFLAGS_PROFILE_FAST  += -g -O3 -ffast-math -fhonor-nans -fhonor-infinities -fvectorize -fslp-vectorize -funroll-loops -fdata-sections -ffunction-sections
+CPPFLAGS_PROFILE_FAST  += -g -O3 -ffast-math -fhonor-nans -fhonor-infinities -fno-finite-math-only -fvectorize -fslp-vectorize -funroll-loops -fdata-sections -ffunction-sections
 LFLAGS_PROFILE         := -m64 -std=c++17 -g
 
 # Production build flags (full optimization, LTO)
 CPPFLAGS_PART-THAT-CAN-BE-SLOW    := $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST)
 CPPFLAGS_PART-THAT-CAN-BE-SLOW    += -Os -fdata-sections -ffunction-sections -flto
-CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -ffast-math -fvectorize -fslp-vectorize -funroll-loops -fdata-sections -ffunction-sections -flto -fomit-frame-pointer -falign-functions=32
+CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -O3 -ffast-math -fno-finite-math-only -fvectorize -fslp-vectorize -funroll-loops -fdata-sections -ffunction-sections -flto -fomit-frame-pointer -falign-functions=32
 LFLAGS := -m64 -std=c++17 -flto -fuse-ld=lld
 
 OUT_DIR := out

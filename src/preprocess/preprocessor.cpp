@@ -114,8 +114,8 @@ void encode_text(FILE* in, FILE* out, int len, std::string temp_path,
     return;
   }
   std::string path = temp_path + "2";
-  FILE* temp_output = fopen(path.c_str(), "wb+");
-  if (!temp_output) abort();
+  FILE* temp_output = nullptr;
+  if (fopen_s(&temp_output, path.c_str(), "wb+") != 0 || !temp_output) abort();
   int orig_pos = ftell(in);
 
   Dictionary dict(dictionary, true, false);

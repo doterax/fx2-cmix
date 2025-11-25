@@ -583,7 +583,7 @@ public:
                     new(_pairs + bucket) PairT(opairs[bucket]);
             }
         }
-        memcpy(_pairs + _num_buckets, opairs + _num_buckets, PACK_SIZE * sizeof(PairT) + _num_buckets / 8 + BIT_PACK);
+        memcpy((void*)(_pairs + _num_buckets), (void*)(opairs + _num_buckets), PACK_SIZE * sizeof(PairT) + _num_buckets / 8 + BIT_PACK);
     }
 
     void swap(HashMap& rhs)
@@ -1182,7 +1182,7 @@ public:
             clearkv();
         else if (_num_filled) {
             memset(_bitmask, 0xFFFFFFFF, (_mask + 1) / 8);
-            memset(_pairs, -1, sizeof(_pairs[0]) * (_mask + 1));
+            memset((void*)_pairs, -1, sizeof(_pairs[0]) * (_mask + 1));
 #if EMH_FIND_HIT
             if constexpr (std::is_integral<KeyT>::value)
             reset_bucket(hash_main(0));
@@ -1268,7 +1268,7 @@ public:
         _num_main = 0;
 #endif
 
-        memset(_pairs, -1, sizeof(_pairs[0]) * num_buckets);
+        memset((void*)_pairs, -1, sizeof(_pairs[0]) * num_buckets);
 
 #if EMH_FIND_HIT
         if constexpr (std::is_integral<KeyT>::value)

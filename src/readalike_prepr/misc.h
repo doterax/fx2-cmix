@@ -8,10 +8,10 @@
 #define DECOMP_CODA_END_LINE  13147027
 
 void split4Comp(char const *enwik9_filename) {
-  FILE* ifile = fopen(enwik9_filename, "rb");
-  FILE* ofile1 = fopen(".intro", "wb");
-  FILE* ofile2 = fopen(".main", "wb");
-  FILE* ofile3 = fopen(".coda", "wb");  
+  FILE* ifile = nullptr; fopen_s(&ifile, enwik9_filename, "rb");
+  FILE* ofile1 = nullptr; fopen_s(&ofile1, ".intro", "wb");
+  FILE* ofile2 = nullptr; fopen_s(&ofile2, ".main", "wb");
+  FILE* ofile3 = nullptr; fopen_s(&ofile3, ".coda", "wb");  
   int line_count = 0;
   
   do {
@@ -37,10 +37,10 @@ void split4Comp(char const *enwik9_filename) {
 }
 
 void split4Decomp() {
-  FILE* ifile = fopen(".input_decomp", "rb");
-  FILE* ofile1 = fopen(".intro_decomp", "wb");
-  FILE* ofile2 = fopen(".main_decomp", "wb");
-  FILE* ofile3 = fopen(".coda_decomp", "wb");  
+  FILE* ifile = nullptr; fopen_s(&ifile, ".input_decomp", "rb");
+  FILE* ofile1 = nullptr; fopen_s(&ofile1, ".intro_decomp", "wb");
+  FILE* ofile2 = nullptr; fopen_s(&ofile2, ".main_decomp", "wb");
+  FILE* ofile3 = nullptr; fopen_s(&ofile3, ".coda_decomp", "wb");  
   int line_count = 0;
   
   do {

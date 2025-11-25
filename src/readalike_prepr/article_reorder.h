@@ -54,7 +54,7 @@ void loadFile(const char * fname) {
     line_count = 0;
     int  state = expect_page;
     Accumulator acc;
-    FILE* file = fopen(fname, "rb");
+    FILE* file = nullptr; fopen_s(&file, fname, "rb");
     while (wfgets(s, 8192*8, file) )  {
          #ifdef DUMPARTICLE
         char *pt = strstr(s, "<title>");
@@ -141,7 +141,7 @@ void reorder() {
        }
     }
 			  
-  FILE* out = fopen(".main_reordered", "wb");
+  FILE* out = nullptr; fopen_s(&out, ".main_reordered", "wb");
   std::string so;
   for(std::size_t i = 0; i < positions.size(); i++) {
     int pos = positions[i];
@@ -169,7 +169,7 @@ void sort() {
  
   bubblesort(vec);
 	  
-  FILE* out = fopen(".main_decomp_restored_sorted", "wb");
+  FILE* out = nullptr; fopen_s(&out, ".main_decomp_restored_sorted", "wb");
   std::string so;
   for(std::size_t i =0; i < vec.size(); i++) {
     for(auto j = vec[i].start; j <= vec[i].end; j++) {
