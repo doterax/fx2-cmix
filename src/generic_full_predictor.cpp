@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <stdio.h>
 #include <vector>
+#include "mixer/NullMixer.hpp"
 
 static inline unsigned int DiscretizeLocal(float p) {
   return 1 + 4094 * p;
@@ -13,7 +14,9 @@ GenericFullPredictor::GenericFullPredictor(const std::vector<bool> &vocab,
     : manager_(), sigmoid_(100001), vocab_(vocab), ppmd_order_(ppmd_order),
       ppmd_mem_mb_(ppmd_mem_mb) {}
 
-void GenericFullPredictor::InitFxcm() { fxcm_model_ = std::make_unique<FXCM>(); }
+void GenericFullPredictor::InitFxcm() {
+  fxcm_model_ = std::make_unique<FXCM>();
+}
 
 unsigned long long GenericFullPredictor::GetNumModels() {
   unsigned long long num = 0;
@@ -29,8 +32,9 @@ unsigned long long GenericFullPredictor::GetNumModels() {
   return num;
 }
 
-void GenericFullPredictor::AddMixer(int layer, const unsigned long long &context,
-                                    float learning_rate) {
+void GenericFullPredictor::AddMixer(int                       layer,
+                                    const unsigned long long &context,
+                                    float                     learning_rate) {
   if (layer == 0) {
     mixer_0_.emplace_back(layers_[layer].Inputs(), layers_[layer].ExtraInputs(),
                           context, learning_rate, mixer_0_.size());
@@ -121,8 +125,10 @@ void GenericFullPredictor::AddMixers() {
     if (vocab_[i])
       ++vocab_size;
   }
+  // byte_mixer_.emplace(1, manager_.bit_context_, vocab_, vocab_size,
+  //                     new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10));
   byte_mixer_.emplace(1, manager_.bit_context_, vocab_, vocab_size,
-                      new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10));
+                      new NullMixer(vocab_size));
 
   for (int i = 0; i < 2; ++i) {
     layers_.emplace_back(sigmoid_, 1.0e-4);
@@ -172,7 +178,7 @@ void GenericFullPredictor::AddMixers() {
 extern int   lstmpr, lstmex;
 static float s_byte_mixer_output = 0.0f;
 
-float GenericFullPredictor::Predict() {
+float        GenericFullPredictor::Predict() {
   unsigned int input_index          = 0;
   auto         bracket_model_output = bracket_model_->Predict()[0];
   layers_[0].SetInput(input_index++, bracket_model_output);
@@ -237,7 +243,7 @@ float GenericFullPredictor::Predict() {
         mw_weights_.assign(mixer_0_.size(), 1.0f);
         mw_last_probs_.assign(mixer_0_.size(), 0.5f);
       }
-      float prob = Sigmoid::Logistic(logit);
+      float prob        = Sigmoid::Logistic(logit);
       mw_last_probs_[i] = prob;
     }
     float scaled_logit = mw_enabled_ ? (logit * mw_weights_[i]) : logit;
@@ -245,9 +251,9 @@ float GenericFullPredictor::Predict() {
     layers_[1].SetStretchedInput(i, scaled_logit);
   }
   layers_[1].SetStretchedInput(mixer_0_.size(),
-                               layers_[0].Inputs()[fxcm_model_index]);
+                                      layers_[0].Inputs()[fxcm_model_index]);
   layers_[1].SetStretchedInput(mixer_0_.size() + 1,
-                               layers_[0].Inputs()[byte_mixer_index]);
+                                      layers_[0].Inputs()[byte_mixer_index]);
 
   float p = Sigmoid::Logistic(mixer_1_[0].Mix());
   p       = sse_.Predict(p);
@@ -290,9 +296,12 @@ void GenericFullPredictor::Perceive(int bit) {
     for (size_t i = 0; i < mw_weights_.size(); ++i) {
       float err     = std::fabs((float)bit - mw_last_probs_[i]);
       float quality = 1.0f - err;
-      mw_weights_[i] = mw_weights_[i] * (1.0f - mw_alpha_) + mw_alpha_ * quality;
-      if (mw_weights_[i] < mw_min_) mw_weights_[i] = mw_min_;
-      if (mw_weights_[i] > mw_max_) mw_weights_[i] = mw_max_;
+      mw_weights_[i] =
+          mw_weights_[i] * (1.0f - mw_alpha_) + mw_alpha_ * quality;
+      if (mw_weights_[i] < mw_min_)
+        mw_weights_[i] = mw_min_;
+      if (mw_weights_[i] > mw_max_)
+        mw_weights_[i] = mw_max_;
     }
   }
 

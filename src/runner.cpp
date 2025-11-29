@@ -9,7 +9,6 @@
 #include "coder/decoder.h"
 #include "coder/encoder.h"
 #include "predictor.h"
-#include "generic_predictor.h"
 #include "generic_full_predictor.h"
 #include "preprocess/preprocessor.h"
 

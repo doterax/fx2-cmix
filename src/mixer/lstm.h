@@ -7,18 +7,19 @@
 #include <string>
 
 #include "lstm-layer.h"
+#include "NMixer.h"
 
 #include "../ds/SmallVector.h"
 
-class Lstm {
+class Lstm: public NMixer {
  public:
   Lstm(unsigned int input_size, unsigned int output_size, unsigned int
       num_cells, unsigned int num_layers, int horizon, float learning_rate,
       float gradient_clip);
   ~Lstm();
-  Eigen::VectorXf& Perceive(unsigned int input);
-  Eigen::VectorXf& Predict(unsigned int input);
-  void SetInput(const Eigen::VectorXf& input);
+  Eigen::VectorXf& Perceive(unsigned int input) override;
+  Eigen::VectorXf& Predict(unsigned int input) override;
+  void SetInput(const Eigen::VectorXf& input) override;
   //void SaveToDisk(const std::string& path);
   //void LoadFromDisk(const std::string& path);
 

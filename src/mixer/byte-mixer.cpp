@@ -1,7 +1,7 @@
 #include "byte-mixer.h"
 
 ByteMixer::ByteMixer(unsigned int num_models, const unsigned int& bit_context,
-    const std::vector<bool>& vocab, unsigned int vocab_size, Lstm* lstm) :
+    const std::vector<bool>& vocab, unsigned int vocab_size, NMixer* lstm) :
     ByteModel(vocab), lstm_(lstm), byte_(bit_context), byte_map_(Eigen::VectorXi::Zero(256)),
     inputs_(Eigen::VectorXf::Zero(vocab_size)), num_models_(num_models), vocab_size_(vocab_size),
     offset_(0) {

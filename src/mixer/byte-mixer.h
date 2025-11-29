@@ -6,17 +6,17 @@
 #include <Eigen/Core>
 
 #include "../models/byte-model.h"
-#include "lstm.h"
+#include "NMixer.h"
 
 class ByteMixer : public ByteModel {
  public:
   ByteMixer(unsigned int num_models, const unsigned int& bit_context,
-      const std::vector<bool>& vocab, unsigned int vocab_size, Lstm* lstm);
+      const std::vector<bool>& vocab, unsigned int vocab_size, NMixer* lstm);
   void SetInput(int index, float val);
   void ByteUpdate();
 
  private:
-  std::unique_ptr<Lstm> lstm_;
+  std::unique_ptr<NMixer> lstm_;
   const unsigned int& byte_;
   Eigen::VectorXi byte_map_;
   Eigen::VectorXf inputs_;
