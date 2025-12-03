@@ -83,6 +83,11 @@ void ContextManager::UpdateWords() {
       o3bState=n3bState;
   }
   if (c==10 || c==')') b3stream=b3stream<<6;
+  // Strengthen structural boundaries for angle brackets
+  if (c==LESSTHAN || c==GREATERTHAN) b3stream=b3stream<<5;
+  // Emphasize block boundaries for curly braces and lists for square brackets
+  if (c==CURLYOPENING || c==CURLYCLOSE) b3stream=b3stream<<5;
+  if (c==SQUAREOPEN || c==SQUARECLOSE) b3stream=b3stream<<4;
   if (c==VERTICALBAR)  b3stream=b3stream*8+wrt_3b[c];
   b2streamcxt=b2stream&0x3ff;// 2^10 bits
   b3streamcxt=b3stream&0x1ff;// 2^9 bits
@@ -120,8 +125,10 @@ void ContextManager::UpdateWords() {
    else if (c==',')                 words=words|0xffc;
    mx5=b2stream&0xffff;//2^16 bits 
    mx7=    b4stream&0xff;
-   mx8=(mx8*(1 << 2)+(b3stream&0x3f))& 0x3FFF;// o1, mask 2^(7*2) , n3 should be 8 bits, use 7 for now
-   mx9cxt=(mx9cxt * (1 << 4) + c) &0xff;
+  // Use full 8-bit from 3-bit stream window for richer context, keep 14-bit mask
+  mx8=(mx8*(1 << 2)+(b3stream&0xFF))& 0x3FFF;// n3 now uses 8 bits from b3stream
+  // Line-start bias: on newline, reset mx9cxt to current byte to prioritize fresh line context
+  if (c=='\n') mx9cxt=c; else mx9cxt=(mx9cxt * (1 << 4) + c) &0xff;
 
    mx10cxt=c;
    mx11cxt=c;
@@ -209,7 +216,8 @@ void ContextManager::UpdateContexts(int bit) {
   mx12=long_bit_context_;
   mx13=long_bit_context_;
   mx16=(recent_bytes_[1])*256+long_bit_context_;
-  mx17=(b3stream&0x3f)*256+long_bit_context_;// 7f or 3f
+  // Refine mx17: 7 bits at byte boundary (bpos==0), 6 bits otherwise
+  mx17=((bpos==0 ? (b3stream&0x7f) : (b3stream&0x3f)))*256+long_bit_context_;
   
       if (bpos==0)  mxx=(stream2bR&63)*8 + (b3stream&7);
     else if (bpos>3) {
