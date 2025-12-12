@@ -33,3 +33,5 @@ test-ppmd.pdb
 y-cmix-notes.txt
 
 *.o
+
+dictionary/words*

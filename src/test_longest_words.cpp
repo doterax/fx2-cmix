@@ -219,5 +219,112 @@ int main(int argc, char** argv) {
     std::printf("  Gain                     : %.2f%%\n", gain);
     std::printf("  Note: Does not include mapping table overhead.\n");
 
+
+    // Reconstruct dictionary for lowercase (ASCII) words only, merging counts for case variants
+    // and output sorted by score descending to dictionary\words.dic (UTF-8 lines).
+    struct AggEntry { unsigned long long count = 0ULL; uint32_t len = 0; };
+    auto to_ascii_lower = [](const std::string& s) {
+        std::string out; out.reserve(s.size());
+        for (unsigned char c : s) {
+            if (c >= 'A' && c <= 'Z') out.push_back((char)(c - 'A' + 'a'));
+            else out.push_back((char)c);
+        }
+        return out;
+    };
+
+    std::unordered_map<std::string, AggEntry> agg;
+    agg.reserve(entries.size());
+    for (const auto& e : entries) {
+        std::string w = reconstruct_word(e.node);
+        std::string lw = to_ascii_lower(w);
+        AggEntry& a = agg[lw];
+        a.count += (unsigned long long)e.count;
+        // word length in bytes remains the same for ASCII case changes and general UTF-8 preservation
+        if (a.len == 0) a.len = e.len; // set once; all variants have same byte length along the same path
+    }
+
+    struct DictItem { std::string word; unsigned long long count; uint32_t len; unsigned long long score; };
+    std::vector<DictItem> dict;
+    dict.reserve(agg.size());
+    for (const auto& kv : agg) {
+        const std::string& w = kv.first;
+        const AggEntry& a = kv.second;
+        uint32_t len = a.len ? a.len : (uint32_t)w.size();
+        unsigned long long score = (unsigned long long)((len > 0) ? (len - 1) : 0) * a.count;
+        dict.push_back(DictItem{w, a.count, len, score});
+    }
+
+    std::sort(dict.begin(), dict.end(), [](const DictItem& x, const DictItem& y){
+        if (x.score != y.score) return x.score > y.score;
+        if (x.count != y.count) return x.count > y.count;
+        if (x.len != y.len) return x.len > y.len;
+        return x.word < y.word;
+    });
+
+    // Prune dictionary by score drop-off heuristic to keep impactful entries
+    // Heuristic:
+    //  - Always keep at least min_keep entries
+    //  - Stop when marginal score falls below min_score OR
+    //    when drop ratio (prev_score / cur_score) exceeds drop_ratio after warmup
+    //  - Also stop when cumulative saved reaches target_coverage of original size
+    const size_t min_keep = 256;              // ensure a base dictionary size
+    const unsigned long long min_score = 2;   // require at least 2 bytes saved total
+    const double drop_ratio = 8.0;            // large cliff in score suggests tail
+    const size_t warmup = 512;                // wait before applying drop detection
+    const double target_coverage = 0.95;      // aim to cover 95% of ideal savings for kept items
+    const size_t hard_cap = 65535;            // absolute max entries to keep
+
+    unsigned long long total_possible = 0ULL;
+    for (const auto& item : dict) total_possible += item.score;
+
+    std::vector<DictItem> pruned;
+    pruned.reserve(std::min(hard_cap, dict.size()));
+    unsigned long long cum = 0ULL;
+    unsigned long long prev_score = dict.empty() ? 0ULL : dict.front().score;
+    for (size_t i = 0; i < dict.size(); ++i) {
+        const auto& item = dict[i];
+        if (i < min_keep) {
+            pruned.push_back(item);
+            cum += item.score;
+            prev_score = item.score;
+            continue;
+        }
+        // Coverage target reached
+        if (total_possible > 0ULL) {
+            double cov = (double)cum / (double)total_possible;
+            if (cov >= target_coverage) break;
+        }
+        // Hard cap
+        if (pruned.size() >= hard_cap) break;
+        // Minimum score requirement
+        if (item.score < min_score) break;
+        // Drop-off detection after warmup
+        if (i >= warmup && prev_score > 0ULL) {
+            double ratio = (double)prev_score / (double)item.score;
+            if (ratio >= drop_ratio) break;
+        }
+        pruned.push_back(item);
+        cum += item.score;
+        prev_score = item.score;
+    }
+
+    // Write dictionary to file (one UTF-8 word per line)
+    {
+        const char* out_path = "dictionary\\words.dic";
+        FILE* df = std::fopen(out_path, "wb");
+        if (!df) {
+            std::fprintf(stderr, "Warning: cannot open %s for writing.\n", out_path);
+        } else {
+            for (const auto& item : pruned) {
+                std::fwrite(item.word.data(), 1, item.word.size(), df);
+                std::fputc('\n', df);
+            }
+            std::fclose(df);
+            std::printf("\nWrote %zu pruned entries to %s\n", pruned.size(), out_path);
+        }
+    }
+
+
+
     return 0;
 }
