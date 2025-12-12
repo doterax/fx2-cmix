@@ -261,3 +261,7 @@ clean:
 
 all: cmix remap
 
+# Dictionary-based compression prototype
+dictionary-compress:
+	$(CC) $(CPPFLAGS_PART-THAT-SHOULD-BE-FAST) -Ithird_party -fuse-ld=lld src/dictionary_compress.cpp -o dictionary-compress.exe
+
