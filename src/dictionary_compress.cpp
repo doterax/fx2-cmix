@@ -28,7 +28,7 @@
 
 static inline bool is_word_char(unsigned char c) {
   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-         (c >= '0' && c <= '9') || (c == '\'');
+         (c >= '0' && c <= '9') /*|| (c == '\'')*/;
 }
 
 static inline bool is_ascii_letter(unsigned char c) {
@@ -850,20 +850,81 @@ static int cmd_build_dict(const std::string &input,
   if (suffix)
     DictionaryBuilder::augment_with_suffixes(entries);
 
-  // Reorder with embedding/co-occurrence if requested
-  EmbeddingPreprocessor::Options eopt;
-  eopt.enable = embed;
-  eopt.window = window;
-  EmbeddingPreprocessor ep(eopt);
-  ep.build_graph(spans);
-  std::vector<std::string> ordered = ep.reorder_words(entries);
+  // Prune non-optimal entries and keep only useful roots/suffixes
+  auto provisional_order = entries; // frequency-sorted
+  std::unordered_map<std::string, uint64_t> provisional_id;
+  for (size_t i = 0; i < provisional_order.size(); ++i)
+    provisional_id[provisional_order[i].word] = (uint64_t)i;
+  auto code_len = [&](const std::string &w) {
+    auto it = provisional_id.find(w);
+    if (it == provisional_id.end())
+      return (size_t)SIZE_MAX;
+    return (size_t)1 + base62_encode(it->second).size();
+  };
+  std::unordered_set<std::string> keep_words;
+  std::unordered_set<std::string> keep_parts; // roots/suffixes contributing to useful splits
+  // Mark original "whole words" that are actually token words (positions non-empty)
+  for (auto &e : entries) {
+    const std::string &w = e.word;
+    size_t raw_len       = w.size();
+    size_t enc_len       = code_len(w);
+    bool   is_token_word = !e.positions.empty();
+    if (is_token_word && enc_len < raw_len)
+      keep_words.insert(w);
+  }
+  // Evaluate splits to mark useful roots/suffixes
+  if (suffix) {
+    std::unordered_set<std::string> entry_set;
+    entry_set.reserve(entries.size() * 2);
+    for (auto &e : entries)
+      entry_set.insert(e.word);
+    for (auto &e : entries) {
+      if (e.positions.empty())
+        continue; // only consider real token words as split targets
+      const std::string &w = e.word;
+      size_t             raw_len = w.size();
+      if (w.size() >= 6) {
+        for (size_t slen = 2; slen <= 6 && slen < w.size(); ++slen) {
+          std::string root = w.substr(0, w.size() - slen);
+          std::string suf  = w.substr(w.size() - slen);
+          if (!entry_set.count(root) || !entry_set.count(suf))
+            continue;
+          size_t len_split = code_len(root) + code_len(suf);
+          if (len_split < raw_len) {
+            keep_parts.insert(root);
+            keep_parts.insert(suf);
+          }
+        }
+      }
+    }
+  }
+  // Build pruned list
+  std::vector<DictEntry> pruned;
+  pruned.reserve(entries.size());
+  for (auto &e : entries) {
+    const std::string &w = e.word;
+    bool is_token_word    = !e.positions.empty();
+    if (is_token_word) {
+      if (keep_words.count(w))
+        pruned.push_back(e);
+    } else { // augmented root/suffix entries
+      if (keep_parts.count(w))
+        pruned.push_back(e);
+    }
+  }
+  entries.swap(pruned);
 
-  // Assign contiguous IDs based on ordered list; small IDs for
-  // frequent/clustered words
+  // Assign IDs strictly by frequency to guarantee shortest codes
+  // for the most common words (e.g., "the" gets id 0 => code 'a').
+  std::vector<DictEntry> freq_sorted = entries;
+  std::sort(freq_sorted.begin(), freq_sorted.end(), [](const DictEntry &a, const DictEntry &b) {
+    if (a.count != b.count) return a.count > b.count;
+    return a.word < b.word;
+  });
   std::unordered_map<std::string, uint64_t> idmap;
-  idmap.reserve(ordered.size());
-  for (size_t i = 0; i < ordered.size(); ++i)
-    idmap[ordered[i]] = (uint64_t)i;
+  idmap.reserve(freq_sorted.size());
+  for (size_t i = 0; i < freq_sorted.size(); ++i)
+    idmap[freq_sorted[i].word] = (uint64_t)i;
 
   // Prepare output entries; sort alphabetically by word as requested
   std::vector<std::pair<std::string, uint64_t>> out;
