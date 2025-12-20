@@ -12,7 +12,12 @@ static inline unsigned int DiscretizeLocal(float p) {
 GenericFullPredictor::GenericFullPredictor(const std::vector<bool> &vocab,
                                            int ppmd_order, int ppmd_mem_mb)
     : manager_(), sigmoid_(100001), vocab_(vocab), ppmd_order_(ppmd_order),
-      ppmd_mem_mb_(ppmd_mem_mb) {}
+      ppmd_mem_mb_(ppmd_mem_mb) {
+  stats_file_.open("predictor_stats.csv", std::ios::out | std::ios::trunc);
+  if (stats_file_.is_open()) {
+    WriteStatsHeader();
+  }
+}
 
 void GenericFullPredictor::InitFxcm() {
   fxcm_model_ = std::make_unique<FXCM>();
@@ -128,6 +133,37 @@ void GenericFullPredictor::AddMixers() {
   byte_mixer_.emplace(1, manager_.bit_context_, vocab_, vocab_size,
                       new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10));
 
+  // Initialize predictor names for statistics
+  predictor_names_.clear();
+  predictor_names_.push_back("bracket_model");
+  predictor_names_.push_back("fxcm_model");
+  for (size_t i = 0; i < direct_models_.size(); ++i) {
+    predictor_names_.push_back("direct_" + std::to_string(i));
+  }
+  for (size_t i = 0; i < match_models_.size(); ++i) {
+    predictor_names_.push_back("match_" + std::to_string(i));
+  }
+  for (size_t i = 0; i < indirect_ns_models_.size(); ++i) {
+    predictor_names_.push_back("indirect_ns_" + std::to_string(i));
+  }
+  for (size_t i = 0; i < indirect_r_models_.size(); ++i) {
+    predictor_names_.push_back("indirect_r_" + std::to_string(i));
+  }
+  predictor_names_.push_back("byte_model");
+  predictor_names_.push_back("byte_mixer");
+  
+  // Initialize stats structure
+  predictor_stats_.resize(predictor_names_.size());
+  for (size_t i = 0; i < predictor_names_.size(); ++i) {
+    predictor_stats_[i].name = predictor_names_[i];
+  }
+  
+  // Now rewrite the header with actual predictor names
+  if (stats_file_.is_open()) {
+    stats_file_.seekp(0);
+    WriteStatsHeader();
+  }
+
   for (int i = 0; i < 2; ++i) {
     layers_.emplace_back(sigmoid_, 1.0e-4);
   }
@@ -178,8 +214,12 @@ static float s_byte_mixer_output = 0.0f;
 
 float        GenericFullPredictor::Predict() {
   unsigned int input_index          = 0;
+  unsigned int stats_index          = 0;
   auto         bracket_model_output = bracket_model_->Predict()[0];
   layers_[0].SetInput(input_index++, bracket_model_output);
+  if (stats_index < predictor_stats_.size()) {
+    predictor_stats_[stats_index++].last_prediction = Sigmoid::Logistic(bracket_model_output);
+  }
 
   const auto &fxcm_model_outputs = fxcm_model_->Predict();
   for (unsigned int j = 0; j < fxcm_model_outputs.size(); ++j) {
@@ -187,12 +227,18 @@ float        GenericFullPredictor::Predict() {
     ++input_index;
   }
   auto fxcm_model_index = input_index - 1;
+  if (stats_index < predictor_stats_.size()) {
+    predictor_stats_[stats_index++].last_prediction = Sigmoid::Logistic(fxcm_model_outputs[0]);
+  }
 
   for (unsigned int i = 0; i < direct_models_.size(); ++i) {
     const Eigen::VectorXf &outputs = direct_models_[i].Predict();
     for (unsigned int j = 0; j < outputs.size(); ++j) {
       layers_[0].SetInput(input_index, outputs[j]);
       ++input_index;
+    }
+    if (stats_index < predictor_stats_.size()) {
+      predictor_stats_[stats_index++].last_prediction = Sigmoid::Logistic(outputs[0]);
     }
   }
 
@@ -202,6 +248,9 @@ float        GenericFullPredictor::Predict() {
       layers_[0].SetInput(input_index, outputs[j]);
       ++input_index;
     }
+    if (stats_index < predictor_stats_.size()) {
+      predictor_stats_[stats_index++].last_prediction = Sigmoid::Logistic(outputs[0]);
+    }
   }
 
   for (unsigned int i = 0; i < indirect_ns_models_.size(); ++i) {
@@ -209,6 +258,9 @@ float        GenericFullPredictor::Predict() {
     for (unsigned int j = 0; j < outputs.size(); ++j) {
       layers_[0].SetInput(input_index, outputs[j]);
       ++input_index;
+    }
+    if (stats_index < predictor_stats_.size()) {
+      predictor_stats_[stats_index++].last_prediction = Sigmoid::Logistic(outputs[0]);
     }
   }
 
@@ -218,8 +270,15 @@ float        GenericFullPredictor::Predict() {
       layers_[0].SetInput(input_index, outputs[j]);
       ++input_index;
     }
+    if (stats_index < predictor_stats_.size()) {
+      predictor_stats_[stats_index++].last_prediction = Sigmoid::Logistic(outputs[0]);
+    }
   }
-  layers_[0].SetInput(input_index++, byte_model_->Predict()[0]);
+  auto byte_model_pred = byte_model_->Predict()[0];
+  layers_[0].SetInput(input_index++, byte_model_pred);
+  if (stats_index < predictor_stats_.size()) {
+    predictor_stats_[stats_index++].last_prediction = Sigmoid::Logistic(byte_model_pred);
+  }
 
   float byte_mixer_override = -1;
 
@@ -227,6 +286,9 @@ float        GenericFullPredictor::Predict() {
     byte_mixer_override = s_byte_mixer_output;
   layers_[0].SetInput(input_index++, s_byte_mixer_output);
   auto  byte_mixer_index = input_index - 1;
+  if (stats_index < predictor_stats_.size()) {
+    predictor_stats_[stats_index++].last_prediction = s_byte_mixer_output;
+  }
 
   float auxiliary_average =
       Sigmoid::Logistic(layers_[0].Inputs()[fxcm_model_index]) +
@@ -262,6 +324,23 @@ float        GenericFullPredictor::Predict() {
 }
 
 void GenericFullPredictor::Perceive(int bit) {
+  // Update statistics for all predictors
+  for (size_t i = 0; i < predictor_stats_.size(); ++i) {
+    float pred = predictor_stats_[i].last_prediction;
+    // Consider a "hit" if prediction was closer to the actual bit than 0.5
+    bool correct = (bit == 1 && pred > 0.5) || (bit == 0 && pred < 0.5);
+    if (correct) {
+      predictor_stats_[i].hits++;
+    } else {
+      predictor_stats_[i].misses++;
+    }
+  }
+  
+  total_bits_++;
+  if (total_bits_ % stats_interval_ == 0) {
+    WriteStatsSnapshot();
+  }
+
   bracket_model_->Perceive(bit);
 
   for (unsigned int i = 0; i < direct_models_.size(); ++i) {
@@ -340,6 +419,37 @@ void GenericFullPredictor::Perceive(int bit) {
   fxcm_model_->Perceive(bit);
   if (byte_update)
     manager_.bit_context_ = 1;
+}
+
+void GenericFullPredictor::WriteStatsHeader() {
+  if (!stats_file_.is_open()) return;
+  
+  stats_file_ << "bit_position";
+  for (const auto& stats : predictor_stats_) {
+    stats_file_ << "," << stats.name;
+  }
+  stats_file_ << "\n";
+  stats_file_.flush();
+}
+
+void GenericFullPredictor::WriteStatsSnapshot() {
+  if (!stats_file_.is_open()) return;
+  
+  stats_file_ << total_bits_;
+  
+  for (const auto& stats : predictor_stats_) {
+    unsigned long long total = stats.hits + stats.misses;
+    float accuracy = total > 0 ? (float)stats.hits / (float)total * 100.0f : 0.0f;
+    stats_file_ << "," << accuracy;
+  }
+  stats_file_ << "\n";
+  stats_file_.flush();
+  
+  // Reset counters for next interval
+  for (auto& stats : predictor_stats_) {
+    stats.hits = 0;
+    stats.misses = 0;
+  }
 }
 
 void GenericFullPredictor::Pretrain(int bit) {

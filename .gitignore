@@ -35,3 +35,7 @@ y-cmix-notes.txt
 *.o
 
 dictionary/words*
+
+predictor_accuracy.png
+
+predictor_stats.csv

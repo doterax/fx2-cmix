@@ -33,6 +33,8 @@
 #include <optional>
 #include <set>
 #include <vector>
+#include <string>
+#include <fstream>
 
 // A self-contained replica of Predictor that does not depend on the Predictor class.
 // Implements the same model wiring and runtime behavior so results match FULL mode.
@@ -106,6 +108,21 @@ private:
   float              mw_max_     = 1.5f;
   std::vector<float> mw_weights_;
   std::vector<float> mw_last_probs_;
+
+  // Predictor statistics tracking
+  struct PredictorStats {
+    std::string name;
+    unsigned long long hits = 0;
+    unsigned long long misses = 0;
+    float last_prediction = 0.5f;
+  };
+  std::vector<PredictorStats> predictor_stats_;
+  std::vector<std::string> predictor_names_;
+  unsigned long long total_bits_ = 0;
+  unsigned long long stats_interval_ = 800; // Write stats every N bits
+  std::ofstream stats_file_;
+  void WriteStatsHeader();
+  void WriteStatsSnapshot();
 };
 
 #endif
