@@ -125,10 +125,8 @@ void GenericFullPredictor::AddMixers() {
     if (vocab_[i])
       ++vocab_size;
   }
-  // byte_mixer_.emplace(1, manager_.bit_context_, vocab_, vocab_size,
-  //                     new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10));
   byte_mixer_.emplace(1, manager_.bit_context_, vocab_, vocab_size,
-                      new NullMixer(vocab_size));
+                      new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10));
 
   for (int i = 0; i < 2; ++i) {
     layers_.emplace_back(sigmoid_, 1.0e-4);
