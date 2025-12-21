@@ -119,7 +119,7 @@ private:
   std::vector<PredictorStats> predictor_stats_;
   std::vector<std::string> predictor_names_;
   unsigned long long total_bits_ = 0;
-  unsigned long long stats_interval_ = 800; // Write stats every N bits
+  unsigned long long stats_interval_ = 80; // Write stats every N bits
   std::ofstream stats_file_;
   void WriteStatsHeader();
   void WriteStatsSnapshot();

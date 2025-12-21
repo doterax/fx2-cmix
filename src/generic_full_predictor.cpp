@@ -151,6 +151,7 @@ void GenericFullPredictor::AddMixers() {
   }
   predictor_names_.push_back("byte_model");
   predictor_names_.push_back("byte_mixer");
+  predictor_names_.push_back("final_mix");
   
   // Initialize stats structure
   predictor_stats_.resize(predictor_names_.size());
@@ -317,6 +318,12 @@ float        GenericFullPredictor::Predict() {
 
   float p = Sigmoid::Logistic(mixer_1_[0].Mix());
   p       = sse_.Predict(p);
+  
+  // Track final mixed prediction
+  if (stats_index < predictor_stats_.size()) {
+    predictor_stats_[stats_index].last_prediction = p;
+  }
+  
   if (byte_mixer_override >= 0) {
     return byte_mixer_override;
   }
