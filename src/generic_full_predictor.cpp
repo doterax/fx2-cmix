@@ -14,8 +14,26 @@ GenericFullPredictor::GenericFullPredictor(const std::vector<bool> &vocab,
     : manager_(), sigmoid_(100001), vocab_(vocab), ppmd_order_(ppmd_order),
       ppmd_mem_mb_(ppmd_mem_mb) {
   stats_file_.open("predictor_stats.csv", std::ios::out | std::ios::trunc);
-  if (stats_file_.is_open()) {
-    WriteStatsHeader();
+  // Header will be written later in AddMixers() after predictor names are known
+}
+
+GenericFullPredictor::~GenericFullPredictor() {
+  try {
+    if (stats_file_.is_open()) {
+      // If there are any accumulated stats not yet flushed due to interval,
+      // write one last snapshot so the tail isn't lost.
+      bool have_counts = false;
+      for (const auto &s : predictor_stats_) {
+        if (s.hits + s.misses > 0) { have_counts = true; break; }
+      }
+      if (have_counts) {
+        WriteStatsSnapshot();
+      }
+      stats_file_.flush();
+      stats_file_.close();
+    }
+  } catch (...) {
+    // Swallow any exceptions during shutdown to avoid non-zero exit
   }
 }
 

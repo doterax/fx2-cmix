@@ -187,7 +187,7 @@ void Compress(unsigned long long input_bytes, std::ifstream *is,
 
   FILE              *progress = nullptr;
   if (fopen_s(&progress, "./progress.log", "w") != 0 || !progress) {
-    abort();
+    progress = nullptr; // Disable progress file on failure
   }
   unsigned long long percent  = std::max(512ull, 1 + (input_bytes / 10000));
   ClearOutput();
@@ -229,8 +229,10 @@ void Compress(unsigned long long input_bytes, std::ifstream *is,
       fprintf(stderr, "\rprogress: %.2f%% | rate: %1.2f bytes/s | ETA: %s     ", frac, rate_bytes_per_sec, eta_buf);
       fflush(stderr);
 
-      fprintf(progress, "%.2f %zu\n", frac, e.OutputSize());
-      fflush(progress);
+      if (progress) {
+        fprintf(progress, "%.2f %zu\n", frac, e.OutputSize());
+        fflush(progress);
+      }
     }
   }
   e.Flush();
@@ -239,6 +241,9 @@ void Compress(unsigned long long input_bytes, std::ifstream *is,
   // Finish the progress line cleanly to avoid overlap with final summary
   fprintf(stderr, "\n");
   fflush(stderr);
+  if (progress) {
+    fclose(progress);
+  }
 }
 
 void Decompress(unsigned long long output_length, std::ifstream *is,

@@ -48,6 +48,7 @@ public:
   float Predict() override;
   void  Perceive(int bit) override;
   void  Pretrain(int bit) override;
+  ~GenericFullPredictor() override;
 
   // Explicit initialization API (moved out of ctor to allow flexible wiring)
   void InitFxcm();
