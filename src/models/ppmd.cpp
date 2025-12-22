@@ -1008,7 +1008,7 @@ struct ppmd_Model {
 
   enum {
     MAX_FREQ = 124,
-    O_BOUND  = 14 // Order Boundary. Low-order contexts < O_BOUND are CRITICAL -
+    O_BOUND  = 12 // Order Boundary. Low-order contexts < O_BOUND are CRITICAL -
                   // they must not be freed during model restoration
   };
 
