@@ -310,7 +310,10 @@ void Predictor::Perceive(int bit) {
   }
   byte_mixer_output = byte_mixer_->Predict()[0];
   lstmpr            = Discretize(byte_mixer_output);
-  lstmex            = byte_mixer_->ex;
+  // Calculate ex per-bit based on current bot_/top_ range after Predict()
+  byte_mixer_->UpdateEx();
+  lstmex = byte_mixer_->GetEx();
+
   fxcm_model_.Perceive(bit);
   if (byte_update)
     manager_.bit_context_ = 1;

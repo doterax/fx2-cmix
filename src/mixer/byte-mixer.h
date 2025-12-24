@@ -14,13 +14,17 @@ class ByteMixer : public ByteModel {
       const std::vector<bool>& vocab, unsigned int vocab_size, NMixer* lstm);
   void SetInput(int index, float val);
   void ByteUpdate();
+  void UpdateEx();  // Calculate ex based on current bot_/top_ range
+  int GetEx() const { return ex; }  // Get the index of maximum probability byte
 
  private:
   std::unique_ptr<NMixer> lstm_;
   const unsigned int& byte_;
   Eigen::VectorXi byte_map_;
   Eigen::VectorXf inputs_;
-  unsigned int num_models_, vocab_size_, offset_;
+  unsigned int num_models_, vocab_size_;
+  int ex;
+  int offset_;
 };
 
 #endif

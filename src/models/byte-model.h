@@ -11,9 +11,8 @@ class ByteModel : public Model {
   virtual ~ByteModel() {}
   ByteModel(const std::vector<bool>& vocab);
   const Eigen::VectorXf& BytePredict();
-   Eigen::VectorXf& Predict() ;
+  Eigen::VectorXf& Predict();
   void Perceive(int bit);
-  int ex;
  protected:
   void ByteUpdate();
   int top_, mid_, bot_;
