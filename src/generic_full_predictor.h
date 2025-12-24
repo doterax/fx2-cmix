@@ -21,23 +21,24 @@
 #include "models/byte-model.h"
 #include "models/direct-hash.h"
 #include "models/direct.h"
-#include "models/model.h"
 #include "models/indirect.h"
 #include "models/match.h"
 #include "models/model.h"
 #include "models/ppmd.h"
+#include "models/url-model.h"
 
 #include "ds/SmallVector.h"
 
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <set>
-#include <vector>
 #include <string>
-#include <fstream>
+#include <vector>
 
-// A self-contained replica of Predictor that does not depend on the Predictor class.
-// Implements the same model wiring and runtime behavior so results match FULL mode.
+// A self-contained replica of Predictor that does not depend on the Predictor
+// class. Implements the same model wiring and runtime behavior so results match
+// FULL mode.
 class FXCM; // forward declaration in global scope
 
 class GenericFullPredictor : public IPredictor {
@@ -53,6 +54,7 @@ public:
   // Explicit initialization API (moved out of ctor to allow flexible wiring)
   void InitFxcm();
   void AddPPMD();
+  void AddURLModel();
   void AddBracket();
   void AddWord();
   void AddMatch();
@@ -60,8 +62,7 @@ public:
   void AddMixers();
   void SetAuxiliarySize(size_t sz) { auxiliary_size_ = sz; }
   // Experimental: adaptively weight layer-0 mixer outputs
-  void EnableMixerWeighting(float alpha = 0.001f,
-                            float min_w = 0.05f,
+  void EnableMixerWeighting(float alpha = 0.001f, float min_w = 0.05f,
                             float max_w = 1.5f) {
     mw_enabled_ = true;
     mw_alpha_   = alpha;
@@ -95,12 +96,16 @@ private:
   Sigmoid                          sigmoid_;
   std::optional<PPMD::PPMD>        byte_model_;
   std::optional<ByteMixer>         byte_mixer_;
+  std::optional<URLModel>          url_model_;
   std::vector<bool>                vocab_;
   std::unique_ptr<FXCM>            fxcm_model_;
 
   // Config
   int ppmd_order_  = 25;
   int ppmd_mem_mb_ = 1024;
+
+  // ByteMixer output override
+  float byte_mixer_output_ = 0.0f;
 
   // Mixer weighting state (experimental)
   bool               mw_enabled_ = false;
@@ -112,18 +117,18 @@ private:
 
   // Predictor statistics tracking
   struct PredictorStats {
-    std::string name;
-    unsigned long long hits = 0;
-    unsigned long long misses = 0;
-    float last_prediction = 0.5f;
+    std::string        name;
+    unsigned long long hits            = 0;
+    unsigned long long misses          = 0;
+    float              last_prediction = 0.5f;
   };
   std::vector<PredictorStats> predictor_stats_;
-  std::vector<std::string> predictor_names_;
-  unsigned long long total_bits_ = 0;
-  unsigned long long stats_interval_ = 8000; // Write stats every N bits
-  std::ofstream stats_file_;
-  void WriteStatsHeader();
-  void WriteStatsSnapshot();
+  std::vector<std::string>    predictor_names_;
+  unsigned long long          total_bits_ = 0;
+  unsigned long long stats_interval_      = 8000; // Write stats every N bits
+  std::ofstream      stats_file_;
+  void               WriteStatsHeader();
+  void               WriteStatsSnapshot();
 };
 
 #endif

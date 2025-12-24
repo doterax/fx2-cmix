@@ -11,7 +11,7 @@ struct ppmd_Model;
 class PPMD : public ByteModel {
 public:
   PPMD(int order, int memory, const unsigned int &bit_context,
-       const std::vector<bool> &vocab);
+       const std::vector<bool> &vocab, bool verbose = true);
   ~PPMD();
   void ByteUpdate();
 

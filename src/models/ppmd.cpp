@@ -23,7 +23,6 @@
 
 #include <cassert>
 
-
 /*
 PPMD Heap Memory Layout
 ===============================================================================
@@ -366,7 +365,7 @@ struct ppmd_Model {
     assert((byte *)p >= HeapStart && (byte *)p < HeapStart + SubAllocatorSize &&
            "setNext: p out of heap bounds");
 
-    uint newIndx = Ptr2Indx(p);
+    uint newIndx   = Ptr2Indx(p);
 
     This->NextIndx = newIndx;
   }
@@ -1161,6 +1160,7 @@ struct ppmd_Model {
   int          BSumm;
   int          RunLength;
   int          InitRL;
+  bool         Verbose;
 
   enum {
     INT_BITS    = 7,
@@ -2154,8 +2154,8 @@ struct ppmd_Model {
     NumMasked = cnum;
   }
 
-  uint cxt;
-  uint y;
+  uint               cxt;
+  uint               y;
   unsigned long long counter_; // Per-instance byte counter for statistics
 
   // Initialize PPMD model with specified parameters
@@ -2261,9 +2261,12 @@ struct ppmd_Model {
     // Handle memory exhaustion
     if (p == 0) {
       if (_CutOff) {
-        printf("reset\n");
+        if (Verbose)
+          printf("reset\n");
         RestoreModelRare(); // Try to reclaim memory
       } else {
+        if (Verbose)
+          printf("full reset\n");
         StartModelRare(); // Full model reset
       }
     }
@@ -2280,10 +2283,11 @@ struct ppmd_Model {
 //   bit_context: Current byte being processed
 //   vocab: Valid byte vocabulary
 PPMD::PPMD(int order, int memory, const unsigned int &bit_context,
-           const std::vector<bool> &vocab)
+           const std::vector<bool> &vocab, bool verbose)
     : ByteModel(vocab), byte_(bit_context),
       byte_map_(Eigen::VectorXi::Zero(256)) {
   ppmd_model_.reset(new ppmd_Model());
+  ppmd_model_->Verbose = verbose;
   ppmd_model_->Init(order, memory, 1, 0); // memory << 20 bytes allocated!
 }
 
