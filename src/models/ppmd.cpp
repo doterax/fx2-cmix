@@ -2156,6 +2156,7 @@ struct ppmd_Model {
 
   uint cxt;
   uint y;
+  unsigned long long counter_; // Per-instance byte counter for statistics
 
   // Initialize PPMD model with specified parameters
   // MaxOrder: Maximum context length (typically 25)
@@ -2167,6 +2168,7 @@ struct ppmd_Model {
     _CutOff   = CutOff;
     _MMAX     = MMAX;
     _filesize = filesize;
+    counter_  = 0; // Initialize counter for this instance
 
     PPMD_STARTUP(); // Initialize lookup tables
 
@@ -2270,8 +2272,6 @@ struct ppmd_Model {
 
 #pragma pack()
 
-unsigned long long counter_ = 0;
-
 // PPMD public interface - wraps internal ppmd_Model
 // Constructor: Creates model with specified order and memory
 // Parameters:
@@ -2292,7 +2292,7 @@ PPMD::~PPMD() {}
 // Called after each byte to update model and generate new predictions
 // Output: probs_ contains probability distribution for next 256 possible bytes
 void PPMD::ByteUpdate() {
-  ++counter_;
+  ++ppmd_model_->counter_;
   ppmd_model_->ppmd_UpdateByte(byte_); // Update frequencies with actual byte
   ppmd_model_->ppmd_PrepareByte();     // Generate predictions for next byte
 
