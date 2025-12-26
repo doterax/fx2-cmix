@@ -202,6 +202,9 @@ void ContextManager::UpdateContexts(int bit) {
     for (auto& context : bracket_contexts_) {
       context.Update();
     }
+    for (auto& context : url_contexts_) {
+      context.Update();
+    }
   }
   wordscxt=(words&0x7F)*256+long_bit_context_;
 

@@ -20,8 +20,11 @@ const int URLModel::NUM_CONTEXT_PATTERNS = 8;
 
 URLModel::URLModel(int ppmdOrder, int ppmdMemoryMb, bool ppmdVerbose,
                    const unsigned int      &bit_context,
-                   const std::vector<bool> &vocab)
-    : ByteModel(vocab), byte_(bit_context), state_(SCANNING), context_pos_(0),
+                   const std::vector<bool> &vocab,
+                   unsigned int &url_state, unsigned int &url_position)
+    : ByteModel(vocab), byte_(bit_context), 
+      url_state_(url_state), url_position_(url_position),
+      state_(SCANNING), context_pos_(0),
       pattern_pos_(0), bytes_in_url_(0), bytes_since_url_(0),
       base_probs_(Eigen::VectorXf::Constant(256, 1.0f / 256)),
       url_probs_(Eigen::VectorXf::Constant(256, 1.0f / 256)) {
@@ -200,6 +203,22 @@ void URLModel::ByteUpdate() {
   // Update state machine
   UpdateState();
 
+  // Update manager's url_state and url_position
+  // State encoding: 0=SCANNING, 1=DETECTED, 2=IN_URL, 3=AFTER_URL
+  if (state_ == SCANNING) {
+    url_state_ = 0;
+    url_position_ = 0;
+  } else if (state_ == DETECTED) {
+    url_state_ = 1;
+    url_position_ = 0;
+  } else if (state_ == IN_URL) {
+    url_state_ = 2;
+    url_position_ = bytes_in_url_;
+  } else if (state_ == AFTER_URL) {
+    url_state_ = 3;
+    url_position_ = bytes_since_url_;
+  }
+
   // Generate predictions based on state
   if (state_ == IN_URL) {
     // Inside URL: use PPMD for URL-specific predictions
@@ -244,31 +263,22 @@ void URLModel::ByteUpdate() {
       probs_ /= sum;
 
   } else {
-    // Normal scanning: use baseline with slight boost for URL patterns
-    probs_ = base_probs_;
-
-    // If we see patterns like "http", "www", boost those chars
-    if (CheckURLPattern()) {
-      for (int i = 0; i < 256; i++) {
-        if (i == ':' || i == '/' || i == '.') {
-          probs_[i] *= 2.0f;
-        }
-      }
-    }
-
-    // Normalize
-    float sum = probs_.sum();
-    if (sum > 0)
-      probs_ /= sum;
+    // Normal scanning or after URL: return completely flat/neutral probabilities
+    // This ensures URLModel doesn't interfere when it shouldn't contribute
+    probs_.setConstant(1.0f / 256);
   }
 
-  // Ensure minimum probabilities for all valid chars
+  // Ensure vocab constraints
   for (int i = 0; i < 256; i++) {
-    if (vocab_[i] && probs_[i] < 1e-7f) {
-      probs_[i] = 1e-7f;
-    } else if (!vocab_[i]) {
+    if (!vocab_[i]) {
       probs_[i] = 0;
     }
+  }
+
+  // Renormalize after vocab filtering
+  float sum = probs_.sum();
+  if (sum > 0) {
+    probs_ /= sum;
   }
 
   ByteModel::ByteUpdate();

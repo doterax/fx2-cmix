@@ -86,7 +86,7 @@ private:
   llvm::SmallVector<Match, 10>           match_models_;
 
   std::optional<Bracket>                 bracket_model_;
-  size_t auxiliary_size_ = 2; // 0 -> fxcm, 1 -> byte_mixer
+  size_t auxiliary_size_ = 2; // 0 -> fxcm/url_model, 1 -> byte_mixer
   SSE    sse_;
   llvm::SmallVector<MixerInput, 2> layers_;
   llvm::SmallVector<Mixer, 23>     mixer_0_;

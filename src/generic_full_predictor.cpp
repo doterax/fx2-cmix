@@ -92,7 +92,19 @@ void GenericFullPredictor::AddURLModel() {
   int ppmdOrder    = 8;
   int ppmdMemoryMb = 64;
   url_model_.emplace(ppmdOrder, ppmdMemoryMb, false, manager_.bit_context_,
-                     vocab_);
+                     vocab_, manager_.url_state_, manager_.url_position_);
+  
+  // Add context-based models for URL patterns (similar to BracketModel)
+  // URLContext tracks URL state from manager: SCANNING/DETECTED/IN_URL/AFTER_URL
+  // Direct/Indirect models learn conditional probabilities based on URL state
+  const Context &context =
+      manager_.AddURLContext(manager_.bit_context_, manager_.url_state_,
+                            manager_.url_position_, 200);
+  direct_models_.emplace_back(context.GetContext(), manager_.bit_context_, 30,
+                              0, context.Size());
+  indirect_ns_models_.emplace_back(manager_.nonstationary_,
+                                   context.GetContext(), manager_.bit_context_,
+                                   300, manager_.shared_map_);
 }
 
 void GenericFullPredictor::AddWord() {
@@ -161,12 +173,16 @@ void GenericFullPredictor::AddMixers() {
     if (vocab_[i])
       ++vocab_size;
   }
+  // Only main PPMD feeds into byte_mixer
   byte_mixer_.emplace(1, manager_.bit_context_, vocab_, vocab_size,
                       new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10));
 
   // Initialize predictor names for statistics
   predictor_names_.clear();
   predictor_names_.push_back("bracket_model");
+  if (url_model_) {
+    predictor_names_.push_back("url_model");
+  }
   predictor_names_.push_back("fxcm_model");
   for (size_t i = 0; i < direct_models_.size(); ++i) {
     predictor_names_.push_back("direct_" + std::to_string(i));
@@ -251,6 +267,16 @@ float      GenericFullPredictor::Predict() {
   if (stats_index < predictor_stats_.size()) {
     predictor_stats_[stats_index++].last_prediction =
         Sigmoid::Logistic(bracket_model_output);
+  }
+
+  // URLModel always provides prediction (returns neutral when not in URL)
+  if (url_model_) {
+    auto url_model_output = url_model_->Predict()[0];
+    layers_[0].SetInput(input_index++, url_model_output);
+    if (stats_index < predictor_stats_.size()) {
+      predictor_stats_[stats_index++].last_prediction =
+          Sigmoid::Logistic(url_model_output);
+    }
   }
 
   const auto &fxcm_model_outputs = fxcm_model_->Predict();
@@ -387,6 +413,9 @@ void GenericFullPredictor::Perceive(int bit) {
   }
 
   bracket_model_->Perceive(bit);
+  if (url_model_) {
+    url_model_->Perceive(bit);
+  }
 
   for (unsigned int i = 0; i < direct_models_.size(); ++i) {
     direct_models_[i].Perceive(bit);
@@ -402,10 +431,6 @@ void GenericFullPredictor::Perceive(int bit) {
   }
 
   byte_model_->Perceive(bit);
-
-  if (url_model_) {
-    url_model_->Perceive(bit);
-  }
 
   byte_mixer_->Perceive(bit);
 
@@ -439,6 +464,10 @@ void GenericFullPredictor::Perceive(int bit) {
   if (byte_update) {
     bracket_model_->ByteUpdate();
 
+    if (url_model_) {
+      url_model_->ByteUpdate();
+    }
+
     for (unsigned int i = 0; i < direct_models_.size(); ++i) {
       direct_models_[i].ByteUpdate();
     }
@@ -458,15 +487,6 @@ void GenericFullPredictor::Perceive(int bit) {
     const Eigen::VectorXf &p = byte_model_->BytePredict();
     for (unsigned int j = 0; j < 256; ++j) {
       byte_mixer_->SetInput(j, p[j]);
-    }
-
-    // Add URL model predictions
-    if (url_model_) {
-      url_model_->ByteUpdate();
-      const Eigen::VectorXf &url_p = url_model_->BytePredict();
-      for (unsigned int j = 0; j < 256; ++j) {
-        byte_mixer_->SetInput(j, url_p[j]);
-      }
     }
 
     byte_mixer_->ByteUpdate();

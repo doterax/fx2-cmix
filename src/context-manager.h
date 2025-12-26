@@ -7,6 +7,7 @@
 #include "contexts/bit-context.h"
 #include "contexts/context-hash.h"
 #include "contexts/bracket-context.h"
+#include "contexts/url-context.h"
 #include "contexts/indirect-hash.h"
 #include "contexts/interval.h"
 #include "contexts/interval-hash.h"
@@ -52,6 +53,16 @@ struct ContextManager {
     return sparse_contexts_[sparse_contexts_.size() - 1];
   }
 
+  template<typename ... Args>
+  const URLContext& AddURLContext(Args&& ...args) {
+    URLContext tmp(std::forward<Args>(args)...);
+    for (const auto& old : url_contexts_) {
+      if (old.IsEqual(&tmp)) return old;
+    }
+    url_contexts_.emplace_back(std::forward<Args>(args)...);
+    return url_contexts_[url_contexts_.size() - 1];
+  }
+
   void UpdateContexts(int bit);
   void UpdateHistory();
   void UpdateWords();
@@ -59,6 +70,7 @@ struct ContextManager {
   void UpdateWRTContext();
 
   unsigned int bit_context_ = 1, wrt_state_ = 0, bpos=0;
+  unsigned int url_state_ = 0, url_position_ = 0;
   unsigned long long long_bit_context_ = 1, zero_context_ = 0, history_pos_ = 0,
       line_break_ = 0, longest_match_ = 0, auxiliary_context_ = 0,
       wrt_context_ = 0,
@@ -89,6 +101,7 @@ struct ContextManager {
   llvm::SmallVector<ContextHash, 12> context_hash_contexts_;
   llvm::SmallVector<Sparse, 18> sparse_contexts_;
   llvm::SmallVector<BracketContext, 1> bracket_contexts_;
+  llvm::SmallVector<URLContext, 1> url_contexts_;
   std::vector<unsigned long long> hashes_ind1,hashes_ind2,hashes_ind3,hashes_ind4,hashes_ind5;
   RunMap run_map_;
   Nonstationary nonstationary_;

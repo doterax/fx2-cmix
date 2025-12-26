@@ -24,7 +24,8 @@
 class URLModel : public ByteModel {
 public:
   URLModel(int ppmdOrder, int ppmdMemoryMb, bool ppmdVerbose,
-           const unsigned int &bit_context, const std::vector<bool> &vocab);
+           const unsigned int &bit_context, const std::vector<bool> &vocab,
+           unsigned int &url_state, unsigned int &url_position);
   ~URLModel();
 
   void ByteUpdate() override;
@@ -40,6 +41,7 @@ public:
   const Stats &GetStats() const { return stats_; }
 
   bool IsInURL() const { return state_ == IN_URL; }
+  bool ShouldContribute() const { return state_ == IN_URL || state_ == DETECTED; }
 
 private:
   enum State {
@@ -64,6 +66,8 @@ private:
   void                UpdateState();
 
   const unsigned int &byte_;
+  unsigned int &url_state_;    // Reference to manager's url_state
+  unsigned int &url_position_; // Reference to manager's url_position
   State               state_;
 
   // Pattern matching buffer (last 16 bytes for context)

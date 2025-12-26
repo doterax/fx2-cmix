@@ -130,7 +130,7 @@ std::unique_ptr<IPredictor> CreateGenericPredictor(const std::vector<bool> &voca
   p->InitFxcm();            // FXCM model
   p->AddBracket();          // Bracket + related contexts
   p->AddPPMD();             // Byte model (PPMD)
-  p->AddURLModel();         // URL-specific predictor
+  // p->AddURLModel();         // URL-specific predictor
   p->AddWord();             // Word-related models
   p->AddMatch();            // Match models
   p->AddDoubleIndirect();   // Double indirect models
