@@ -25,7 +25,10 @@ void ByteMixer::SetInput(int index, float val) {
 }
 
 void ByteMixer::ByteUpdate() {
-  inputs_ *= 2.0 / num_models_;
+  if (num_models_ > 1) {
+    inputs_ *= 1.0f / static_cast<float>(num_models_);
+  }
+  // inputs_ *= 2.0 / num_models_; // previous scaling
   lstm_->SetInput(inputs_);
   inputs_.setZero();
   const auto &output = lstm_->Perceive(byte_map_[byte_]);
