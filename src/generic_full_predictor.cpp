@@ -173,9 +173,13 @@ void GenericFullPredictor::AddMixers() {
     if (vocab_[i])
       ++vocab_size;
   }
-  // Only main PPMD feeds into byte_mixer
-  byte_mixer_.emplace(1, manager_.bit_context_, vocab_, vocab_size,
-                      new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10));
+
+  //auto mixer = new NullMixer( vocab_size);
+  auto mixer = new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10);
+
+  auto num_models = 1UL; //only main PPMD feeds into byte_mixer
+  byte_mixer_.emplace(num_models, manager_.bit_context_, vocab_, vocab_size, mixer);
+
 
   // Initialize predictor names for statistics
   predictor_names_.clear();
