@@ -133,25 +133,65 @@ Adds new model inputs alongside PPMd+LSTM, blended by an N-input context-indexed
 
 **Results (english.dic):**
 
+#### v1: PPMd + LSTM + Bracket (no SSE)
+
 | Corpus | Input (bytes) | Output (bytes) | Ratio | Time | Speed |
 |--------|--------------|---------------|-------|------|-------|
-| input | 51,052 | **5,920** | 11.60% | 7.7s | 6,647 B/s |
-| input2 | 941,724 | **181,323** | 19.25% | 72.4s | 13,005 B/s |
-| enwik7 | 10,000,000 | **1,901,615** | 19.02% | 739.8s | 13,517 B/s |
+| input | 51,052 | 5,920 | 11.60% | 7.7s | 6,647 B/s |
+| input2 | 941,724 | 181,323 | 19.25% | 72.4s | 13,005 B/s |
+| enwik7 | 10,000,000 | 1,901,615 | 19.02% | 739.8s | 13,517 B/s |
 
-#### Comparison: ByteMixer v5 vs MixPredictor vs Full
+#### v2: PPMd + LSTM + Bracket + SSE
 
-| Corpus | ByteMixer v5 (PPMd+LSTM) | MixPredictor (PPMd+LSTM+Bracket) | Improvement | Full predictor |
-|--------|-------------------------|----------------------------------|-------------|----------------|
-| input (51K) | 5,976 | **5,920** | -56 (-0.9%) | 4,765 |
-| input2 (942K) | 181,669 | **181,323** | -346 (-0.2%) | 158,273 |
-| enwik7 (10M) | 1,902,208 | **1,901,615** | -593 (-0.03%) | — |
+SSE (Secondary Symbol Estimation) applied after the micro-mixer output. Corrects systematic calibration bias in the mixer's probability estimates using a dual-chain adaptive piecewise-linear interpolation with bit-history context.
+
+| Corpus | Input (bytes) | Output (bytes) | Ratio | Time | Speed |
+|--------|--------------|---------------|-------|------|-------|
+| input | 51,052 | **5,897** | 11.55% | 7.6s | 6,709 B/s |
+| input2 | 941,724 | **180,420** | 19.16% | 73.5s | 12,820 B/s |
+| enwik7 | 10,000,000 | **1,888,460** | 18.88% | 746.4s | 13,398 B/s |
+
+#### Comparison: ByteMixer v5 → MixPredictor v1 → v2 → Full
+
+| Corpus | ByteMixer v5 | Mix v1 (no SSE) | Mix v2 (+SSE) | Full predictor |
+|--------|-------------|-----------------|--------------|----------------|
+| input (51K) | 5,976 | 5,920 | **5,897** | 4,765 |
+| input2 (942K) | 181,669 | 181,323 | **180,420** | 158,273 |
+| enwik7 (10M) | 1,902,208 | 1,901,615 | **1,888,460** | — |
 
 **Analysis:**
-- Bracket model + BracketContext together save 56 bytes on input, 346 on input2, 593 on enwik7.
-- The Bracket model provides a 3rd prediction signal (probability of closing bracket at given distance). BracketContext adds a mixer context dimension (inside/outside brackets), allowing the mixer to learn different PPMd/LSTM/Bracket blending weights depending on structural position.
-- Gains are modest because the Bracket model only predicts the **closing bracket character itself** — it does not predict the tag name content between brackets. PPMd order 25 already captures most closing tag patterns when context fits within 25 bytes.
-- Gap to full predictor on input: **1,155 bytes** (was 1,211 with ByteMixer v5). The remaining gap comes from Match models, Indirect/Nonstationary state machines, Direct context models, FXCM, and SSE calibration — none of which are in MixPredictor yet.
+
+**SSE provides the biggest single-step improvement so far:**
+- input: -23 bytes (v1→v2), total -79 from ByteMixer v5 (-1.3%)
+- input2: -903 bytes (v1→v2), total -1,249 from ByteMixer v5 (-0.7%)
+- enwik7: **-13,155 bytes** (v1→v2), total -13,748 from ByteMixer v5 (-0.7%)
+
+SSE's impact scales with data size: on enwik7 it saves 13K bytes — more than all previous improvements from adding Bracket + BracketContext (-593) combined by **22×**.
+
+#### Why SSE helps — the calibration problem explained
+
+Our micro-mixer outputs a probability via logistic regression: `p = Squash(w0*Stretch(ppmd) + w1*Stretch(lstm) + w2*Stretch(bracket))`. This is a good estimator, but it has a systematic flaw: **the output often doesn't match the true frequency of 1-bits**.
+
+**Example:** When the mixer outputs p=0.95, the actual frequency of 1-bits in that situation might be 0.98. When it outputs p=0.02, the true rate might be 0.005. The mixer is "right about the direction" but wrong about the magnitude — especially at the extremes near 0 and 1, where each fraction of a percent matters most for compression.
+
+**Why this matters for compression:** The arithmetic coder assigns code lengths based on $-\log_2(p)$. If the true probability is 0.98 but we say 0.95, we waste $-\log_2(0.95) - (-\log_2(0.98)) \approx 0.044$ bits per symbol. Over millions of symbols, this adds up to thousands of bytes. The loss is **asymmetric** — errors near 0 and 1 are much costlier than errors near 0.5, because the log function is steepest there.
+
+**What SSE does:** It maintains a small adaptive lookup table (7 interpolation points across [0,1]) that maps mixer output → corrected output. It learns this mapping online from actual bit outcomes. If the mixer consistently outputs 0.95 when the truth is 0.98, the SSE table entry near 0.95 gradually shifts toward 0.98. It also uses bit-history context (recent bits seen, byte position) to have different correction tables for different situations.
+
+**Why it scales with data size:**
+- On input (51K / ~6K compressed): SSE has ~48K bit updates to learn its correction table — barely enough to populate 7 interpolation points × a few contexts. Saves only 23 bytes.
+- On enwik7 (10M / ~1.9M compressed): SSE has ~15M bit updates. The correction table becomes highly accurate, and the systematic bias it corrects affects every single bit prediction. Saves 13,155 bytes.
+
+**Why the mixer is miscalibrated in the first place:**
+1. Logistic regression is a linear model in the stretched (log-odds) domain — it can't capture nonlinear interactions between inputs
+2. The Stretch/Squash transforms distort the probability space — a small weight error compounds differently at p=0.5 vs p=0.99
+3. Our 80 context-indexed mixers each have limited training data, so their weights converge to approximate values, not exact ones
+4. SSE acts as a lightweight nonlinear correction layer — like a tiny neural network that learns the residual error pattern
+
+**Gap to full predictor:**
+- input: 5,897 vs 4,765 — **1,132 bytes** remaining (was 1,211 pre-MixPredictor)
+- input2: 180,420 vs 158,273 — **22,147 bytes** (14.0% gap, was 14.8%)
+- The remaining gap comes from Match models (exact pattern matching), Indirect/Nonstationary state machines, Direct context models, and FXCM — plus the full predictor's 23 context-specific L0 mixers vs our 80 context-indexed micro-mixers.
 
 #### Future idea: Closing tag content prediction
 

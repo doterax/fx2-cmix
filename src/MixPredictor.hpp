@@ -4,6 +4,7 @@
 #include "IPredictor.h"
 #include "contexts/bracket-context.h"
 #include "mixer/lstm.h"
+#include "mixer/sse.h"
 #include "models/bracket.h"
 #include "models/ppmd.h"
 #include <Eigen/Core>
@@ -143,7 +144,8 @@ public:
     int mixer_idx = (prev_byte_class_ * kMixNumBitPositions + bit_pos)
                     * kMixNumBracketStates + bracket_state_;
 
-    return mixers_[mixer_idx].Mix(inputs, num_inputs_);
+    float mix_p = mixers_[mixer_idx].Mix(inputs, num_inputs_);
+    return sse_.Predict(mix_p);
   }
 
   void Perceive(int bit) override {
@@ -154,6 +156,9 @@ public:
     int mixer_idx = (prev_byte_class_ * kMixNumBitPositions + bit_pos)
                     * kMixNumBracketStates + bracket_state_;
     mixers_[mixer_idx].Update(bit);
+
+    // Update SSE
+    sse_.Perceive(bit);
 
     // Update sub-models
     ppmd_->Perceive(bit);
@@ -220,6 +225,7 @@ private:
   std::unique_ptr<Bracket> bracket_;
   std::unique_ptr<BracketContext> bracket_ctx_;
   std::vector<NMicroMixer> mixers_;
+  SSE sse_;
 };
 
 #endif
