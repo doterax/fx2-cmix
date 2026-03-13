@@ -7,6 +7,17 @@
 | `input` (fast) | 51,052 B | 6,152 B | 20.1 s | 2,569 B/s | 12.05% |
 | `input2` (longer) | 941,724 B | 181,019 B | 255.9 s | 3,688 B/s | 19.22% |
 
+## After P0 Optimizations
+
+| Test | Input Size | Output Size | Time | Rate | Compression Ratio | Delta vs Baseline |
+|------|-----------|-------------|------|------|-------------------|--------------------|
+| `input` (fast) | 51,052 B | 6,149 B | 18.1 s | 2,817 B/s | 12.04% | **-3 B, 1.10× faster** |
+| `input2` (longer) | 941,724 B | 181,039 B | 234.3 s | 4,019 B/s | 19.22% | **+20 B, 1.09× faster** |
+
+**Notes:** The tiny output size changes (−3 B / +20 B) are from the log-sum-exp trick in the LSTM
+softmax, which changes floating-point evaluation order. These are within numerical noise
+and demonstrate no meaningful compression degradation. Net speedup: **~9-10%**.
+
 **Command (fast):** `./cmix.exe no-preprocess .\prof_input\input ./res.bin`  
 **Command (longer):** `./cmix.exe no-preprocess .\prof_input\input2 ./res2.bin`  
 **Configuration:** 461 total model outputs, LSTM 200 cells, horizon 128, PPMd order 25 / 1024 MB, 23 layer-0 mixers + 1 layer-1 mixer + SSE.  
@@ -593,26 +604,26 @@ profiles for an additional 5-10% speedup.
 
 ## Implementation Priority
 
-| # | Optimization | Est. Speedup | Risk | Effort | Priority |
-|---|-------------|-------------|------|--------|----------|
-| 1c | LSTM output layer as matrix | 1.2-1.5× | None | Low | **P0** |
-| 2a | Adam eliminate Ones() temporaries | 1.1-1.2× | None | Low | **P0** |
-| 2b | Adam pre-compute pow() | 1.05× | None | Low | **P0** |
-| 6b | Mixer combine Mix+Perceive lookup | 1.05-1.1× | None | Low | **P0** |
-| 7a | Mark model classes final | 1.02-1.05× | None | Trivial | **P0** |
-| 8c | Eliminate Ones() in gate computation | 1.02-1.05× | None | Trivial | **P0** |
-| 10a | Reduce indirect hash to proper widths | 1.05-1.1× | None | Low | **P0** |
-| 3 | LSTM softmax as matrix-vector multiply | 1.1-1.3× | Near-zero | Medium | **P1** |
-| 4 | Fuse layer normalization | 1.05-1.1× | None | Low | **P1** |
-| 5a | PPMd Indx2Ptr fast-path inline | 1.05-1.1× | None | Low | **P1** |
-| 5b | PPMd context tree prefetching | 1.05-1.1× | None | Low | **P1** |
-| 6a | Mixer context cache | 1.05× | None | Low | **P1** |
-| 7b | Reduce sigmoid table size | 1.02-1.05× | Minimal | Low | **P1** |
-| 12a | PGO build | 1.05-1.15× | None | Low | **P1** |
-| 1a | LSTM truncated BPTT | 1.3-2× | Low-Med | Medium | **P2** |
-| 1b | Reduce BPTT frequency | 1.5-2× | Low | Medium | **P2** |
-| 5c | PPMd memset optimization | 1.02× | None | Low | **P2** |
-| 9 | SSE table size reduction | 1.05-1.1× | Needs testing | High | **P3** |
+| # | Optimization | Est. Speedup | Risk | Effort | Priority | Status |
+|---|-------------|-------------|------|--------|----------|--------|
+| 1c | LSTM output layer as matrix | 1.2-1.5× | None | Low | **P0** | ✅ Done |
+| 2a | Adam eliminate Ones() temporaries | 1.1-1.2× | None | Low | **P0** | ✅ Done |
+| 2b | Adam pre-compute pow() | 1.05× | None | Low | **P0** | ✅ Done |
+| 6b | Mixer combine Mix+Perceive lookup | 1.05-1.1× | None | Low | **P0** | ✅ Done |
+| 7a | Mark model classes final | 1.02-1.05× | None | Trivial | **P0** | ✅ Done |
+| 8c | Eliminate Ones() in gate computation | 1.02-1.05× | None | Trivial | **P0** | ✅ Done |
+| 10a | Reduce indirect hash to proper widths | 1.05-1.1× | None | Low | **P0** | ✅ Done |
+| 3 | LSTM softmax as matrix-vector multiply | 1.1-1.3× | Near-zero | Medium | **P1** | — |
+| 4 | Fuse layer normalization | 1.05-1.1× | None | Low | **P1** | — |
+| 5a | PPMd Indx2Ptr fast-path inline | 1.05-1.1× | None | Low | **P1** | — |
+| 5b | PPMd context tree prefetching | 1.05-1.1× | None | Low | **P1** | — |
+| 6a | Mixer context cache | 1.05× | None | Low | **P1** | — |
+| 7b | Reduce sigmoid table size | 1.02-1.05× | Minimal | Low | **P1** | — |
+| 12a | PGO build | 1.05-1.15× | None | Low | **P1** | — |
+| 1a | LSTM truncated BPTT | 1.3-2× | Low-Med | Medium | **P2** | — |
+| 1b | Reduce BPTT frequency | 1.5-2× | Low | Medium | **P2** | — |
+| 5c | PPMd memset optimization | 1.02× | None | Low | **P2** | — |
+| 9 | SSE table size reduction | 1.05-1.1× | Needs testing | High | **P3** | — |
 
 ### Estimated Combined Speedup (P0 items): **1.4-1.8×** (no compression impact)
 ### Estimated Combined Speedup (P0+P1): **1.6-2.2×** (minimal compression impact)

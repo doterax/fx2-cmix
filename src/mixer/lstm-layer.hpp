@@ -38,8 +38,9 @@ namespace {
 
 inline void Adam(Eigen::VectorXf* g, Eigen::VectorXf* m,
     Eigen::VectorXf* v, Eigen::VectorXf* w, float learning_rate,
-    float t) {
-  const float beta1 = 0.025, beta2 = 0.9999, eps = 1e-6f; 
+    float t, float bias_corr1, float bias_corr2) {
+  const float eps = 1e-6f; 
+  const float beta1 = 0.025f, beta2 = 0.9999f;
   float alpha;
   if (t < UPDATE_LIMIT) {
     alpha = learning_rate * 0.1f / sqrt(5e-5f * t + 1.0f); 
@@ -50,19 +51,15 @@ inline void Adam(Eigen::VectorXf* g, Eigen::VectorXf* m,
   (*m) += (1.0f - beta1) * (*g);
   (*v) *= beta2;
   (*v) += (1.0f - beta2) * (*g).cwiseProduct(*g);
-  if (t < UPDATE_LIMIT) {
-    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, t))).cwiseQuotient(
-        ((*v) / (float)(1.0f - pow(beta2, t))).array().sqrt().matrix() + eps * Eigen::VectorXf::Ones(w->size())));
-  } else {
-    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, UPDATE_LIMIT))).cwiseQuotient(
-        ((*v) / (float)(1.0f - pow(beta2, UPDATE_LIMIT))).array().sqrt().matrix() + eps * Eigen::VectorXf::Ones(w->size())));
-  }
+  w->array() -= alpha * (m->array() / bias_corr1) /
+      ((v->array() / bias_corr2).sqrt() + eps);
 }
 
 inline void AdamMatrix(Eigen::MatrixXf* g, Eigen::MatrixXf* m,
     Eigen::MatrixXf* v, Eigen::MatrixXf* w, float learning_rate,
-    float t) {
-  const float beta1 = 0.025f, beta2 = 0.9999f, eps = 1e-6f;
+    float t, float bias_corr1, float bias_corr2) {
+  const float eps = 1e-6f;
+  const float beta1 = 0.025f, beta2 = 0.9999f;
   
   float alpha;
   if (t < UPDATE_LIMIT) {
@@ -77,13 +74,8 @@ inline void AdamMatrix(Eigen::MatrixXf* g, Eigen::MatrixXf* m,
   (*v) *= beta2;
   (*v) += (1.0f - beta2) * g->cwiseProduct(*g);
   
-  if (t < UPDATE_LIMIT) {
-    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, t))).cwiseQuotient(
-        ((*v) / (float)(1.0f - pow(beta2, t))).array().sqrt().matrix() + eps * Eigen::MatrixXf::Ones(w->rows(), w->cols())));
-  } else {
-    (*w) -= alpha * (((*m) / (float)(1.0f - pow(beta1, UPDATE_LIMIT))).cwiseQuotient(
-        ((*v) / (float)(1.0f - pow(beta2, UPDATE_LIMIT))).array().sqrt().matrix() + eps * Eigen::MatrixXf::Ones(w->rows(), w->cols())));
-  }
+  w->array() -= alpha * (m->array() / bias_corr1) /
+      ((v->array() / bias_corr2).sqrt() + eps);
 }
 
 }
@@ -131,7 +123,7 @@ inline void LstmLayer::ForwardPass(const Eigen::VectorXf& input, int input_symbo
   output_gate_.state_[epoch_] = (1.0f / (1.0f + (-output_gate_.state_[epoch_].array()).exp())).matrix();
   
   // Vectorized gate computations
-  input_gate_state_[epoch_] = Eigen::VectorXf::Ones(num_cells_) - forget_gate_.state_[epoch_];
+  input_gate_state_[epoch_] = (1.0f - forget_gate_.state_[epoch_].array()).matrix();
   state_ = state_.cwiseProduct(forget_gate_.state_[epoch_]);
   state_ += input_node_.state_[epoch_].cwiseProduct(input_gate_state_[epoch_]);
   tanh_state_[epoch_] = state_.array().tanh().matrix();
@@ -195,6 +187,8 @@ inline void LstmLayer::BackwardPass(const Eigen::VectorXf&input, int epoch,
   } else {
     if (update_steps_ < UPDATE_LIMIT) {
       ++update_steps_;
+      beta1_power_ *= 0.025f;
+      beta2_power_ *= 0.9999f;
     }
   }
 
@@ -246,10 +240,13 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
   neurons.update_.col(input_symbol) += neurons.error_;
   
   if (epoch == 0) {
+    // Use pre-computed running power products for bias correction
+    float bias_corr1 = 1.0f - beta1_power_;
+    float bias_corr2 = 1.0f - beta2_power_;
     // Matrix-wise Adam update
-    AdamMatrix(&neurons.update_, &neurons.m_, &neurons.v_, &neurons.weights_, learning_rate_, update_steps_);
-    Adam(&neurons.gamma_u_, &neurons.gamma_m_, &neurons.gamma_v_, &neurons.gamma_, learning_rate_, update_steps_);
-    Adam(&neurons.beta_u_, &neurons.beta_m_, &neurons.beta_v_, &neurons.beta_, learning_rate_, update_steps_);
+    AdamMatrix(&neurons.update_, &neurons.m_, &neurons.v_, &neurons.weights_, learning_rate_, update_steps_, bias_corr1, bias_corr2);
+    Adam(&neurons.gamma_u_, &neurons.gamma_m_, &neurons.gamma_v_, &neurons.gamma_, learning_rate_, update_steps_, bias_corr1, bias_corr2);
+    Adam(&neurons.beta_u_, &neurons.beta_m_, &neurons.beta_v_, &neurons.beta_, learning_rate_, update_steps_, bias_corr1, bias_corr2);
   }
 }
 

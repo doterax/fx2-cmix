@@ -41,13 +41,10 @@ ContextData* Mixer::GetContextData() {
 }
 
 float Mixer::Mix() {
-  ContextData* data = GetContextData();
-  float p = inputs_.dot(data->weights);
+  last_data_ = GetContextData();
+  float p = inputs_.dot(last_data_->weights);
   p_ = p;
-  // for (std::size_t i = 0; i < extra_inputs_.size(); ++i) {
-  //   extra_inputs_[i] = extra_inputs_vec_[i];
-  // }
-  float e = extra_inputs_vec_.head(extra_inputs_size_).dot(data->extra_weights);
+  float e = extra_inputs_vec_.head(extra_inputs_size_).dot(last_data_->extra_weights);
   p_ += e;
   return p_;
 }
@@ -71,7 +68,7 @@ void Mixer::Perceive(int bit) {
   }
    // ++data->steps;
   update = decay * update;
-  ContextData* data = GetContextData();
+  ContextData* data = last_data_;  // Reuse cached pointer from Mix()
   
   data->weights -= update * inputs_;
   data->extra_weights -= update * extra_inputs_vec_.head(extra_inputs_size_);

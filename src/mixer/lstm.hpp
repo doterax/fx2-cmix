@@ -10,7 +10,7 @@ inline Lstm::Lstm(unsigned int input_size, unsigned int output_size, unsigned in
     hidden_(Eigen::VectorXf::Zero(num_cells * num_layers + 1)), 
     hidden_error_(Eigen::VectorXf::Zero(num_cells)),
     layer_input_(horizon, std::vector<Eigen::VectorXf>(num_layers)),
-    output_layer_(horizon, std::vector<Eigen::VectorXf>(output_size)),
+    output_layer_(horizon, Eigen::MatrixXf::Zero(num_cells * num_layers + 1, output_size)),
     output_(horizon, Eigen::VectorXf::Constant(output_size, 1.0 / output_size)),
     learning_rate_(learning_rate), num_cells_(num_cells), epoch_(0),
     horizon_(horizon), input_size_(input_size), output_size_(output_size) {
@@ -20,10 +20,6 @@ inline Lstm::Lstm(unsigned int input_size, unsigned int output_size, unsigned in
     for (unsigned int i = 0; i < num_layers; ++i) {
       layer_input_[epoch][i] = Eigen::VectorXf::Zero(input_size + 1 + num_cells * 2);
       layer_input_[epoch][i][layer_input_[epoch][i].size() - 1] = 1;
-    }
-    
-    for (unsigned int i = 0; i < output_size; ++i) {
-      output_layer_[epoch][i] = Eigen::VectorXf::Zero(num_cells * num_layers + 1);
     }
   }
   
@@ -94,11 +90,11 @@ inline Eigen::VectorXf& Lstm::Perceive(unsigned int input) {
     for (int epoch = horizon_ - 1; epoch >= 0; --epoch) {
       for (int layer = layers_.size() - 1; layer >= 0; --layer) {
         int offset = layer * num_cells_;
-        for (unsigned int i = 0; i < output_size_; ++i) {
-          // Compute error for class i and accumulate vectorized contribution
-          const float error = output_[epoch][i] - (i == static_cast<unsigned int>(input_history_[epoch]));
-          hidden_error_.noalias() += error * output_layer_[epoch][i].segment(offset, num_cells_);
-        }
+        // Compute errors for all output classes
+        Eigen::VectorXf errors_vec = output_[epoch];
+        errors_vec[input_history_[epoch]] -= 1.0f;
+        // Accumulate hidden error via matrix multiply: output_layer^T * errors
+        hidden_error_.noalias() += output_layer_[epoch].block(offset, 0, num_cells_, output_size_) * errors_vec;
         int prev_epoch = epoch - 1;
         if (prev_epoch == -1) prev_epoch = horizon_ - 1;
         int input_symbol = input_history_[prev_epoch];
@@ -109,15 +105,13 @@ inline Eigen::VectorXf& Lstm::Perceive(unsigned int input) {
     }
   }
 
-  // Vectorized output layer update: compute all errors and update in batch
+  // Vectorized output layer update: single rank-1 matrix update
   Eigen::VectorXf errors = output_[last_epoch];
   errors[input] -= 1.0f;
   errors *= learning_rate_;
   
-  for (unsigned int i = 0; i < output_size_; ++i) {
-    output_layer_[epoch_][i] = output_layer_[last_epoch][i];
-    output_layer_[epoch_][i].noalias() -= errors[i] * hidden_;
-  }
+  output_layer_[epoch_] = output_layer_[last_epoch];
+  output_layer_[epoch_].noalias() -= hidden_ * errors.transpose();
   return Predict(input);
 }
 
@@ -132,10 +126,10 @@ inline Eigen::VectorXf& Lstm::Predict(unsigned int input) {
           hidden_.segment(i * num_cells_, num_cells_);
     }
   }
-  for (unsigned int i = 0; i < output_size_; ++i) {
-    float sum = hidden_.dot(output_layer_[epoch_][i]);
-    output_[epoch_][i] = exp(sum);
-  }
+  // Single matrix-vector multiply for all output logits
+  Eigen::VectorXf logits = output_layer_[epoch_].transpose() * hidden_;
+  float max_logit = logits.maxCoeff();
+  output_[epoch_] = (logits.array() - max_logit).exp();
   float total = output_[epoch_].sum();
   output_[epoch_] /= total;
   int epoch = epoch_;

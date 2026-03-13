@@ -6,7 +6,7 @@
 #include <vector>
 #include <array>
 
-class Match : public Model {
+class Match final : public Model {
  public:
   Match(const std::vector<unsigned char>& history,
     const unsigned long long& byte_context, const unsigned int& bit_context_,

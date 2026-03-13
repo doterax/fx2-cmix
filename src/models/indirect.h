@@ -9,7 +9,7 @@
 #include "..\random.hpp"
 
 template<typename StateType>
-class Indirect : public Model {
+class Indirect final : public Model {
  public:
   Indirect(const StateType& state,
       const unsigned long long& byte_context,

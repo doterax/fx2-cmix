@@ -15,7 +15,7 @@ public:
 };
 }
 
-class FXCM : public Model {
+class FXCM final : public Model {
  public:
   FXCM();
   const Eigen::VectorXf& Predict() const;

@@ -6,7 +6,7 @@
 #include <vector>
 #include <array>
 
-class Direct : public Model {
+class Direct final : public Model {
  public:
   Direct(const unsigned long long& byte_context,
       const unsigned int& bit_context, int limit, float delta, int size);

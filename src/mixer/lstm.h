@@ -29,8 +29,8 @@ private:
   llvm::SmallVector<LstmLayer, 1> layers_;
   std::vector<uint8_t> input_history_; // horizon
   Eigen::VectorXf hidden_, hidden_error_;
-  std::vector<std::vector<Eigen::VectorXf>> layer_input_,
-      output_layer_;
+  std::vector<std::vector<Eigen::VectorXf>> layer_input_;
+  std::vector<Eigen::MatrixXf> output_layer_;  // [horizon] each (hidden_size+1) x output_size
   std::vector<Eigen::VectorXf> output_;
   float learning_rate_;
   unsigned int num_cells_, epoch_, horizon_, input_size_, output_size_;

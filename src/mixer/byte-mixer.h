@@ -8,7 +8,7 @@
 #include "../models/byte-model.h"
 #include "NMixer.h"
 
-class ByteMixer : public ByteModel {
+class ByteMixer final : public ByteModel {
  public:
   ByteMixer(unsigned int num_models, const unsigned int& bit_context,
       const std::vector<bool>& vocab, unsigned int vocab_size, NMixer* lstm);

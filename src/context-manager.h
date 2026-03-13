@@ -15,6 +15,7 @@
 #include "contexts/sparse.h"
 
 #include <cmath>
+#include <cstdint>
 #include "ds/SmallVector.h"
 
 #include <vector>
@@ -102,7 +103,9 @@ struct ContextManager {
   llvm::SmallVector<Sparse, 18> sparse_contexts_;
   llvm::SmallVector<BracketContext, 1> bracket_contexts_;
   llvm::SmallVector<URLContext, 1> url_contexts_;
-  std::vector<unsigned long long> hashes_ind1,hashes_ind2,hashes_ind3,hashes_ind4,hashes_ind5;
+  std::vector<uint8_t> hashes_ind1;
+  std::vector<uint32_t> hashes_ind2,hashes_ind3;
+  std::vector<unsigned long long> hashes_ind4,hashes_ind5;
   RunMap run_map_;
   Nonstationary nonstationary_;
 };
