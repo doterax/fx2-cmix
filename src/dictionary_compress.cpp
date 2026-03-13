@@ -1,1193 +1,896 @@
+// dictionary_compress.cpp — High-byte dictionary preprocessor for cmix
+//
+// Uses the same encoding scheme as cmix's original preprocessor (0x80+ codes),
+// but with frequency-optimal dictionary building, aggressive pruning of words
+// that don't improve compression, and substring (prefix/suffix) matching.
+//
+// Encoding scheme (compatible with cmix decoder):
+//   - Words mapped to 1/2/3-byte codes in 0x80+ range
+//   - Tier 1:  indices 0..79       -> 1 byte  (0x80 + idx)
+//   - Tier 2:  indices 80..3919    -> 2 bytes  (0xD0 + hi, 0x80 + lo)  hi=48, lo=80
+//   - Tier 3:  indices 3920..44879 -> 3 bytes  (0xF0 + hi, 0xD0 + mid, 0x80 + lo)
+//   - Case markers: 0x40 = capitalized, 0x07 = all-uppercase, 0x06 = end-upper
+//   - Escape: 0x0C prefix for literal bytes that collide with markers/high bytes
+//
+// Build modes:
+//   build-dict  -- Build optimal dictionary from a corpus file
+//   compress    -- Preprocess input using a dictionary (produces binary output)
+//   decompress  -- Reverse the preprocessing
+//   analyze     -- Show compression statistics without writing output
+//   verify      -- Roundtrip verification
+
 #include <algorithm>
+#include <cassert>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
-#include <limits>
-#include <random>
+#include <list>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-// Prototype dictionary-based compressor with optional embedding-inspired
-// preprocessor Single-file, modular classes, UTF-8-friendly tokenization (ASCII
-// word set), reversible compression with case markers and escaping.
-//
-// Markers (escape alphabet)
-#define MC_LOWER   '~'  // lowercase dictionary word
-#define MC_CAP1    '^'  // capitalize first letter
-#define MC_ALLCAPS '*'  // all letters uppercase
-#define MC_ESCAPE  '\\' // escape prefix for raw data blocks ("\\<len>:\"...\"")
-// Note: We use a length-prefixed raw segment to avoid ambiguity with marker
-// stream.
-//       This simplifies robust decompression.
+// ---------------------------------------------------------------------------
+// Constants -- same as cmix's dictionary.cpp
+// ---------------------------------------------------------------------------
+static const unsigned char kCapitalized = 0x40;
+static const unsigned char kUppercase   = 0x07;
+static const unsigned char kEndUpper    = 0x06;
+static const unsigned char kEscape      = 0x0C;
 
-static inline bool is_word_char(unsigned char c) {
-  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-         (c >= '0' && c <= '9') /*|| (c == '\'')*/;
-}
+static const int kBoundary1 = 80;
+static const int kBoundary2 = kBoundary1 + 48 * 80;          // 3920
+static const int kBoundary3 = kBoundary2 + 16 * 32 * 80;     // 44880
+static const int kMaxDictSize = kBoundary3;                   // 44880 words max
 
-static inline bool is_ascii_letter(unsigned char c) {
-  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-}
-
-// Base62 encoding (a-zA-Z0-9) as requested; 'a' is first code in examples.
-// We'll use ordering: a..z, A..Z, 0..9
-static const char BASE62_ALPHABET[] =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-static inline std::string base62_encode(uint64_t v) {
-  if (v == 0)
-    return std::string(1, BASE62_ALPHABET[0]);
-  char buf[32];
-  int  pos = 31;
-  buf[pos] = '\0';
-  --pos;
-  while (v > 0 && pos >= 0) {
-    uint64_t r = v % 62ULL;
-    v /= 62ULL;
-    buf[pos--] = BASE62_ALPHABET[r];
+// ---------------------------------------------------------------------------
+// High-byte code encoding/decoding (matches cmix format exactly)
+// ---------------------------------------------------------------------------
+static unsigned int index_to_bytes(int idx) {
+  if (idx < kBoundary1) {
+    return 0x80 + idx;
+  } else if (idx < kBoundary2) {
+    int adj = idx - kBoundary1;
+    unsigned int bytes = 0xD0 + (adj / 80);
+    bytes += (0x80 + (adj % 80)) << 8;
+    return bytes;
+  } else if (idx < kBoundary3) {
+    int adj = idx - kBoundary2;
+    unsigned int bytes = 0xF0 + ((adj / 80) / 32);
+    bytes += (0xD0 + ((adj / 80) % 32)) << 8;
+    bytes += (0x80 + (adj % 80)) << 16;
+    return bytes;
   }
-  return std::string(&buf[pos + 1]);
-}
-static inline int base62_index(char c) {
-  if (c >= 'a' && c <= 'z')
-    return c - 'a';
-  if (c >= 'A' && c <= 'Z')
-    return 26 + (c - 'A');
-  if (c >= '0' && c <= '9')
-    return 52 + (c - '0');
-  return -1;
-}
-static inline bool is_base62(char c) {
-  return base62_index(c) >= 0;
-}
-static inline bool base62_decode(const std::string &s, uint64_t &out) {
-  uint64_t v = 0;
-  for (char c : s) {
-    int idx = base62_index(c);
-    if (idx < 0)
-      return false;
-    v = v * 62ULL + (uint64_t)idx;
-  }
-  out = v;
-  return true;
-}
-
-// Case pattern detection for tokens containing ASCII letters
-enum class CasePattern { Lower, Capitalized, Upper, Mixed, None };
-static CasePattern detect_case(const std::string &token) {
-  bool any = false, any_lower = false, any_upper = false;
-  for (unsigned char c : token)
-    if (is_ascii_letter(c)) {
-      any = true;
-      if (c >= 'A' && c <= 'Z')
-        any_upper = true;
-      else
-        any_lower = true;
-    }
-  if (!any)
-    return CasePattern::None;
-  // Check capitalized: first alpha upper, rest alpha lower
-  int first_alpha = -1;
-  for (size_t i = 0; i < token.size(); ++i) {
-    unsigned char c = token[i];
-    if (is_ascii_letter(c)) {
-      first_alpha = (int)i;
-      break;
-    }
-  }
-  if (first_alpha >= 0) {
-    bool cap1       = (token[first_alpha] >= 'A' && token[first_alpha] <= 'Z');
-    bool rest_lower = true;
-    for (size_t i = first_alpha + 1; i < token.size(); ++i) {
-      unsigned char c = token[i];
-      if (is_ascii_letter(c) && !(c >= 'a' && c <= 'z')) {
-        rest_lower = false;
-        break;
-      }
-    }
-    if (cap1 && rest_lower)
-      return CasePattern::Capitalized;
-  }
-  if (any_upper && !any_lower)
-    return CasePattern::Upper;
-  if (any_lower && !any_upper)
-    return CasePattern::Lower;
-  return CasePattern::Mixed;
-}
-static inline std::string to_lower_ascii(const std::string &s) {
-  std::string out;
-  out.reserve(s.size());
-  for (unsigned char c : s)
-    out.push_back((char)std::tolower(c));
-  return out;
-}
-static inline std::string apply_case_pattern(const std::string &lower_word,
-                                             CasePattern        pat) {
-  if (pat == CasePattern::Lower || pat == CasePattern::None)
-    return lower_word;
-  if (pat == CasePattern::Upper) {
-    std::string w = lower_word;
-    for (auto &ch : w)
-      if (is_ascii_letter((unsigned char)ch))
-        ch = (char)std::toupper((unsigned char)ch);
-    return w;
-  }
-  if (pat == CasePattern::Capitalized) {
-    std::string w = lower_word;
-    for (size_t i = 0; i < w.size(); ++i) {
-      unsigned char c = w[i];
-      if (is_ascii_letter(c)) {
-        w[i] = (char)std::toupper(c);
-        break;
-      }
-    }
-    return w;
-  }
-  // Mixed: we don't reconstruct mixed with markers; compressor emits raw
-  return lower_word;
-}
-
-// Tokenizer: splits into word tokens and non-word spans; also counts articles
-// via "<page>"
-class Tokenizer {
-public:
-  struct Span {
-    bool        is_word;
-    std::string text;
-    size_t      start_pos;
-    size_t      article_index;
-  };
-  static std::vector<Span> Tokenize(const std::string &data,
-                                    size_t            &article_count) {
-    std::vector<Span> spans;
-    spans.reserve(data.size() / 8);
-    article_count      = 0;
-    size_t cur_article = 0;
-    // simple article counting
-    for (size_t i = 0; i + 5 <= data.size(); ++i)
-      if (data.compare(i, 6, "<page>") == 0)
-        ++article_count;
-    // assign running article_index
-    cur_article             = 0;
-    size_t i                = 0;
-    size_t last_article_pos = 0;
-    while (i < data.size()) {
-      if (i + 5 <= data.size() && data.compare(i, 6, "<page>") == 0) {
-        spans.push_back({false, std::string("<page>"), i, cur_article});
-        ++cur_article;
-        i += 6;
-        continue;
-      }
-      size_t start = i;
-      if (is_word_char((unsigned char)data[i])) {
-        while (i < data.size() && is_word_char((unsigned char)data[i]))
-          ++i;
-        spans.push_back(
-            {true, data.substr(start, i - start), start, cur_article});
-      } else {
-        while (i < data.size() && !is_word_char((unsigned char)data[i])) {
-          if (i + 5 <= data.size() && data.compare(i, 6, "<page>") == 0)
-            break;
-          ++i;
-        }
-        spans.push_back(
-            {false, data.substr(start, i - start), start, cur_article});
-      }
-    }
-    if (article_count == 0 && data.size() > 0)
-      article_count = 1; // at least 1
-    return spans;
-  }
-};
-
-// Dictionary building
-struct DictEntry {
-  std::string           word;
-  uint64_t              count = 0;
-  std::vector<uint32_t> positions;
-  std::vector<uint32_t> articles;
-};
-
-class DictionaryBuilder {
-public:
-  struct Options {
-    bool     lowercase     = true;
-    uint64_t min_frequency = 1;
-    uint32_t position_cap  = 0;
-  };
-  DictionaryBuilder(const Options &opt) : opt_(opt) {}
-  void ingest_spans(const std::vector<Tokenizer::Span> &spans) {
-    uint32_t token_index = 0;
-    for (const auto &sp : spans) {
-      if (!sp.is_word)
-        continue;
-      std::string w = opt_.lowercase ? to_lower_ascii(sp.text) : sp.text;
-      auto       &e = map_[w];
-      e.word        = w;
-      e.count++;
-      if (opt_.position_cap == 0 || e.positions.size() < opt_.position_cap)
-        e.positions.push_back(token_index);
-      if (e.articles.empty() || e.articles.back() != sp.article_index)
-        e.articles.push_back((uint32_t)sp.article_index);
-      ++token_index;
-    }
-  }
-  void finalize(std::vector<DictEntry> &out_entries) {
-    out_entries.clear();
-    out_entries.reserve(map_.size());
-    for (auto &kv : map_)
-      if (kv.second.count >= opt_.min_frequency)
-        out_entries.push_back(std::move(kv.second));
-    std::sort(out_entries.begin(), out_entries.end(),
-              [](const DictEntry &a, const DictEntry &b) {
-                if (a.count != b.count)
-                  return a.count > b.count;
-                return a.word < b.word;
-              });
-  }
-
-  // Augment with root+suffix entries derived from words (heuristic)
-  static void augment_with_suffixes(std::vector<DictEntry> &entries,
-                                    uint32_t                min_root_len   = 4,
-                                    uint32_t                min_suffix_len = 2,
-                                    uint32_t                max_suffix_len = 6,
-                                    uint64_t                min_root_total = 3,
-                                    uint32_t                min_variants = 2) {
-    // Build frequency map of words
-    std::unordered_map<std::string, uint64_t> word_freq;
-    word_freq.reserve(entries.size() * 2);
-    for (auto &e : entries)
-      word_freq[e.word] = e.count;
-
-    struct RootAgg {
-      uint64_t                                  total = 0;
-      std::unordered_map<std::string, uint64_t> suffixes;
-    };
-    std::unordered_map<std::string, RootAgg> roots;
-    roots.reserve(entries.size() * 2);
-    for (auto &e : entries) {
-      const std::string &w = e.word;
-      if (w.size() < min_root_len + min_suffix_len)
-        continue;
-      for (uint32_t slen = min_suffix_len; slen <= max_suffix_len; ++slen) {
-        if (slen >= w.size())
-          break;
-        std::string root = w.substr(0, w.size() - slen);
-        if (root.size() < min_root_len)
-          continue;
-        std::string suf = w.substr(w.size() - slen);
-        auto       &agg = roots[root];
-        agg.total += e.count;
-        agg.suffixes[suf] += e.count;
-      }
-    }
-    // Select productive roots
-    std::vector<std::pair<std::string, RootAgg>> selected;
-    selected.reserve(roots.size());
-    for (auto &kv : roots) {
-      if (kv.second.total >= min_root_total &&
-          kv.second.suffixes.size() >= min_variants)
-        selected.push_back(kv);
-    }
-    if (selected.empty())
-      return;
-
-    // Add root and suffix entries to dictionary entries if not present; update
-    // counts if present
-    std::unordered_map<std::string, size_t> index;
-    index.reserve(entries.size() * 2);
-    for (size_t i = 0; i < entries.size(); ++i)
-      index[entries[i].word] = i;
-    auto ensure_entry = [&](const std::string &s, uint64_t add_count) {
-      auto it = index.find(s);
-      if (it == index.end()) {
-        DictEntry e;
-        e.word  = s;
-        e.count = add_count;
-        entries.push_back(std::move(e));
-        index[s] = entries.size() - 1;
-      } else {
-        entries[it->second].count += add_count;
-      }
-    };
-    for (auto &kv : selected) {
-      const std::string &root = kv.first;
-      const RootAgg     &ra   = kv.second;
-      ensure_entry(root, ra.total);
-      for (auto &sv : ra.suffixes)
-        ensure_entry(sv.first, sv.second);
-    }
-    // Re-sort by frequency desc then word
-    std::sort(entries.begin(), entries.end(),
-              [](const DictEntry &a, const DictEntry &b) {
-                if (a.count != b.count)
-                  return a.count > b.count;
-                return a.word < b.word;
-              });
-  }
-
-private:
-  Options                                    opt_;
-  std::unordered_map<std::string, DictEntry> map_;
-};
-
-// Co-occurrence graph and optional embedding-like reorder
-class EmbeddingPreprocessor {
-public:
-  struct Options {
-    int   window     = 4;
-    bool  enable     = false;
-    int   dims       = 64;
-    int   iterations = 128;
-    float move_coeff = 0.1f;
-  };
-  EmbeddingPreprocessor(const Options &opt) : opt_(opt) {}
-
-  void build_graph(const std::vector<Tokenizer::Span> &spans) {
-    // Build token sequence of lowercased words
-    sequence_.clear();
-    sequence_.reserve(spans.size());
-    for (const auto &sp : spans)
-      if (sp.is_word)
-        sequence_.push_back(to_lower_ascii(sp.text));
-    // map ids
-    for (const auto &w : sequence_) {
-      auto it = id_.find(w);
-      if (it == id_.end()) {
-        int nid = (int)id_.size();
-        id_[w]  = nid;
-        names_.push_back(w);
-      }
-    }
-    int V = (int)names_.size();
-    adj_.assign(V, {});
-    // Sliding window co-occurrence counts
-    for (size_t i = 0; i < sequence_.size(); ++i) {
-      int wi = id_[sequence_[i]];
-      int lo = (int)(i > (size_t)opt_.window ? i - opt_.window : 0);
-      int hi = (int)std::min(sequence_.size(), i + (size_t)opt_.window + 1);
-      for (int j = lo; j < hi; ++j)
-        if ((size_t)j != i) {
-          int wj = id_[sequence_[j]];
-          adj_[wi][wj] += 1.0f;
-        }
-    }
-  }
-
-  // Greedy neighbor ordering based on co-occurrence strength
-  std::vector<int>
-  greedy_order_by_graph(const std::vector<DictEntry> &dict) const {
-    // seed ordering by dict frequency list: map name->rank
-    std::unordered_map<std::string, int> freq_rank;
-    freq_rank.reserve(dict.size());
-    for (size_t i = 0; i < dict.size(); ++i)
-      freq_rank[dict[i].word] = (int)i;
-    int               V = (int)names_.size();
-    std::vector<char> used(V, 0);
-    std::vector<int>  order;
-    order.reserve(V);
-    // choose start as highest freq present in names_
-    int start     = -1;
-    int best_rank = INT_MAX;
-    for (int vid = 0; vid < V; ++vid) {
-      auto it = freq_rank.find(names_[vid]);
-      if (it == freq_rank.end())
-        continue;
-      if (it->second < best_rank) {
-        best_rank = it->second;
-        start     = vid;
-      }
-    }
-    if (start < 0) { // fallback id order
-      for (int v = 0; v < V; ++v)
-        order.push_back(v);
-      return order;
-    }
-    int cur   = start;
-    used[cur] = 1;
-    order.push_back(cur);
-    for (;;) {
-      // pick strongest neighbor not used
-      int   next  = -1;
-      float bestw = 0.0f;
-      for (auto &kv : adj_[cur]) {
-        int v = kv.first;
-        if (used[v])
-          continue;
-        float w = kv.second;
-        if (w > bestw) {
-          bestw = w;
-          next  = v;
-        }
-      }
-      if (next < 0) {
-        // find next most frequent unused
-        int best  = -1;
-        int bestR = INT_MAX;
-        for (int v = 0; v < V; ++v)
-          if (!used[v]) {
-            auto it = freq_rank.find(names_[v]);
-            int  r  = it == freq_rank.end() ? INT_MAX : it->second;
-            if (r < bestR) {
-              bestR = r;
-              best  = v;
-            }
-          }
-        if (best < 0)
-          break;
-        next = best;
-      }
-      used[next] = 1;
-      order.push_back(next);
-      cur = next;
-    }
-    return order;
-  }
-
-  // Optional lightweight embedding relaxation: pull vectors toward neighbor
-  // means
-  std::vector<int> embed_and_order(const std::vector<DictEntry> &dict) const {
-    int V = (int)names_.size();
-    if (V == 0)
-      return {};
-    // Lightweight embedding without external deps: random init + neighbor mean
-    // relax
-    std::mt19937                          rng(42);
-    std::uniform_real_distribution<float> dist(0.f, 1.f);
-    std::vector<std::vector<float>>       pos(
-        V, std::vector<float>(std::max(1, opt_.dims), 0.f));
-    for (int i = 0; i < V; ++i)
-      for (int d = 0; d < opt_.dims; ++d)
-        pos[i][d] = dist(rng);
-    for (int it = 0; it < opt_.iterations; ++it) {
-      for (int i = 0; i < V; ++i) {
-        if (adj_[i].empty())
-          continue;
-        std::vector<float> mean(opt_.dims, 0.f);
-        float              wsum = 0.f;
-        for (auto &kv : adj_[i]) {
-          int   j = kv.first;
-          float w = kv.second;
-          wsum += w;
-          for (int d = 0; d < opt_.dims; ++d)
-            mean[d] += pos[j][d] * w;
-        }
-        if (wsum > 0) {
-          float mc = opt_.move_coeff;
-          for (int d = 0; d < opt_.dims; ++d) {
-            mean[d] /= wsum;
-            pos[i][d] = pos[i][d] + mc * (mean[d] - pos[i][d]);
-          }
-        }
-      }
-    }
-    struct Item {
-      int   id;
-      float score;
-    };
-    std::vector<Item> arr;
-    arr.reserve(V);
-    for (int i = 0; i < V; ++i) {
-      float s = 0.f;
-      for (int d = 0; d < opt_.dims; ++d)
-        s += pos[i][d];
-      arr.push_back({i, s});
-    }
-    std::sort(arr.begin(), arr.end(),
-              [](const Item &a, const Item &b) { return a.score > b.score; });
-    std::vector<int> order;
-    order.reserve(V);
-    for (auto &it : arr)
-      order.push_back(it.id);
-    return order;
-  }
-  // Produce a reordered list of dictionary words according to
-  // embedding/co-occurrence
-  std::vector<std::string>
-  reorder_words(const std::vector<DictEntry> &dict) const {
-    std::unordered_set<std::string> dictset;
-    for (auto &e : dict)
-      dictset.insert(e.word);
-    std::vector<int> ord = greedy_order_by_graph(dict);
-    if (opt_.enable) {
-      std::vector<int> emb = embed_and_order(dict);
-      if (!emb.empty())
-        ord = emb; // prefer embedding order when available
-    }
-    std::vector<std::string> words;
-    words.reserve(dict.size());
-    std::unordered_set<std::string> seen;
-    for (int id : ord) {
-      const std::string &w = names_[id];
-      if (dictset.count(w) && !seen.count(w)) {
-        words.push_back(w);
-        seen.insert(w);
-      }
-    }
-    for (auto &e : dict)
-      if (!seen.count(e.word))
-        words.push_back(e.word);
-    return words;
-  }
-
-private:
-  Options                                     opt_;
-  std::vector<std::string>                    sequence_;
-  std::unordered_map<std::string, int>        id_;
-  std::vector<std::string>                    names_;
-  std::vector<std::unordered_map<int, float>> adj_;
-};
-
-// Dictionary codec
-struct Dictionary {
-  // maps
-  std::unordered_map<std::string, uint64_t> word_to_id; // lowercased word -> id
-  std::unordered_map<uint64_t, std::string> id_to_word;
-
-  static bool Load(const std::string &path, Dictionary &d) {
-    d.word_to_id.clear();
-    d.id_to_word.clear();
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
-      return false;
-    std::string line;
-    while (std::getline(in, line)) {
-      if (line.empty())
-        continue;
-      // format: word,code
-      size_t comma = line.rfind(',');
-      if (comma == std::string::npos)
-        continue;
-      std::string word = line.substr(0, comma);
-      std::string code = line.substr(comma + 1);
-      uint64_t    id   = 0;
-      if (!base62_decode(code, id))
-        continue;
-      d.word_to_id[word] = id;
-      d.id_to_word[id]   = word;
-    }
-    return true;
-  }
-
-  static bool
-  Save(const std::string                                   &path,
-       const std::vector<std::pair<std::string, uint64_t>> &entries) {
-    std::ofstream out(path, std::ios::binary);
-    if (!out)
-      return false;
-    for (auto &kv : entries) {
-      out << kv.first << "," << base62_encode(kv.second) << "\n";
-    }
-    return true;
-  }
-};
-
-// Compressor/Decompressor
-class Compressor {
-public:
-  Compressor(const Dictionary &dict, bool enable_suffix = false,
-             bool prefer_suffix = false, bool force_suffix = false)
-      : dict_(dict), enable_suffix_(enable_suffix),
-        prefer_suffix_(prefer_suffix), force_suffix_(force_suffix) {}
-
-  // Compress to text stream with markers. Non-word spans written as-is, but any
-  // marker characters in raw are escaped using a length-prefixed raw segment
-  // format: "\\<len>:<raw>" when needed.
-  std::string compress(const std::vector<Tokenizer::Span> &spans) const {
-    std::string out;
-    out.reserve(spans.size() * 4);
-    for (const auto &sp : spans) {
-      if (!sp.is_word) {
-        append_raw(out, sp.text);
-        continue;
-      }
-      // try dictionary
-      CasePattern pat = detect_case(sp.text);
-      if (pat == CasePattern::Mixed) {
-        append_raw(out, sp.text);
-        continue;
-      }
-      std::string lower = to_lower_ascii(sp.text);
-      // choose best encoding: whole-word vs root+suffix (if enabled)
-      auto encode_len = [](char marker, uint64_t id) {
-        return (size_t)1 + base62_encode(id).size();
-      };
-      auto     it          = dict_.word_to_id.find(lower);
-      size_t   best_len    = SIZE_MAX;
-      int      choice      = 0; // 0=raw,1=whole,2=split
-      bool     split_found = false;
-      uint64_t id_w = 0, id_root = 0, id_suf = 0;
-      size_t   split_pos = 0;
-
-      // whole-word candidate
-      if (it != dict_.word_to_id.end()) {
-        id_w     = it->second;
-        size_t l = encode_len(MC_LOWER, id_w);
-        best_len = l;
-        choice   = 1;
-      }
-      // split candidate
-      if (enable_suffix_ && lower.size() >= 6) {
-        for (size_t slen = 2; slen <= 6 && slen < lower.size(); ++slen) {
-          std::string root = lower.substr(0, lower.size() - slen);
-          std::string suf  = lower.substr(lower.size() - slen);
-          auto        ir   = dict_.word_to_id.find(root);
-          if (ir == dict_.word_to_id.end())
-            continue;
-          auto is = dict_.word_to_id.find(suf);
-          if (is == dict_.word_to_id.end())
-            continue;
-          size_t l;
-          if (pat == CasePattern::Upper) {
-            // mark both to ensure full caps
-            l = encode_len(MC_ALLCAPS, ir->second) +
-                encode_len(MC_ALLCAPS, is->second);
-          } else if (pat == CasePattern::Capitalized) {
-            // Capitalize the first alphabetic letter across root+suffix.
-            size_t root_len      = lower.size() - slen;
-            bool   alpha_in_root = false;
-            for (size_t k = 0; k < root_len; ++k) {
-              if (is_ascii_letter((unsigned char)lower[k])) {
-                alpha_in_root = true;
-                break;
-              }
-            }
-            char m1 = alpha_in_root ? MC_CAP1 : MC_LOWER;
-            char m2 = alpha_in_root ? MC_LOWER : MC_CAP1;
-            l       = encode_len(m1, ir->second) + encode_len(m2, is->second);
-          } else {
-            // lower case: both pieces lower
-            l = encode_len(MC_LOWER, ir->second) +
-                encode_len(MC_LOWER, is->second);
-          }
-          // prefer or force suffix splits if requested
-          if (force_suffix_ || l < best_len ||
-              (prefer_suffix_ && choice == 1)) {
-            best_len    = l;
-            choice      = 2;
-            id_root     = ir->second;
-            id_suf      = is->second;
-            split_pos   = slen;
-            split_found = true;
-          }
-        }
-      }
-      // Savings rule: only encode if shorter than raw by at least 1
-      size_t raw_len = sp.text.size();
-      if (choice == 0 || best_len >= raw_len) {
-        append_raw(out, sp.text);
-        continue;
-      }
-      if (choice == 1 || (force_suffix_ && !split_found)) {
-        char marker = MC_LOWER;
-        if (pat == CasePattern::Capitalized)
-          marker = MC_CAP1;
-        else if (pat == CasePattern::Upper)
-          marker = MC_ALLCAPS;
-        out.push_back(marker);
-        out += base62_encode(id_w);
-      } else {
-        if (pat == CasePattern::Upper) {
-          out.push_back(MC_ALLCAPS);
-          out += base62_encode(id_root);
-          out.push_back(MC_ALLCAPS);
-          out += base62_encode(id_suf);
-        } else if (pat == CasePattern::Capitalized) {
-          // Ensure capitalization applies to the first alphabetic letter
-          size_t root_len      = lower.size() - split_pos;
-          bool   alpha_in_root = false;
-          for (size_t k = 0; k < root_len; ++k) {
-            if (is_ascii_letter((unsigned char)lower[k])) {
-              alpha_in_root = true;
-              break;
-            }
-          }
-          char m1 = alpha_in_root ? MC_CAP1 : MC_LOWER;
-          char m2 = alpha_in_root ? MC_LOWER : MC_CAP1;
-          out.push_back(m1);
-          out += base62_encode(id_root);
-          out.push_back(m2);
-          out += base62_encode(id_suf);
-        } else {
-          out.push_back(MC_LOWER);
-          out += base62_encode(id_root);
-          out.push_back(MC_LOWER);
-          out += base62_encode(id_suf);
-        }
-      }
-    }
-    return out;
-  }
-
-private:
-  const Dictionary  &dict_;
-  bool               enable_suffix_ = false;
-  bool               prefer_suffix_ = false;
-  bool               force_suffix_  = false;
-
-  static inline bool needs_escape(const std::string &s) {
-    for (unsigned char c : s)
-      if (c == MC_LOWER || c == MC_CAP1 || c == MC_ALLCAPS || c == MC_ESCAPE)
-        return true;
-    return false;
-  }
-  static void append_raw(std::string &out, const std::string &raw) {
-    if (!needs_escape(raw)) {
-      out += raw;
-      return;
-    }
-    // length-prefixed: \\<len>:<raw>
-    out.push_back(MC_ESCAPE);
-    out += std::to_string((unsigned long long)raw.size());
-    out.push_back(':');
-    out += raw;
-  }
-};
-
-class Decompressor {
-public:
-  Decompressor(const Dictionary &dict) : dict_(dict) {}
-
-  std::string decompress(const std::string &data) const {
-    std::string out;
-    out.reserve(data.size());
-    size_t i = 0;
-    while (i < data.size()) {
-      char c = data[i];
-      if (c == MC_ESCAPE) {
-        // read number until ':'
-        size_t j = i + 1;
-        size_t n = 0;
-        while (j < data.size() && std::isdigit((unsigned char)data[j])) {
-          n = n * 10 + (data[j] - '0');
-          ++j;
-        }
-        if (j < data.size() && data[j] == ':') {
-          ++j;
-          if (j + n <= data.size()) {
-            out.append(data, j, n);
-            i = j + n;
-            continue;
-          }
-        }
-        // malformed; emit as-is
-        out.push_back(c);
-        ++i;
-        continue;
-      } else if (c == MC_LOWER || c == MC_CAP1 || c == MC_ALLCAPS) {
-        // parse base62 code
-        size_t j = i + 1;
-        while (j < data.size() && is_base62(data[j]))
-          ++j;
-        if (j == i + 1) {
-          out.push_back(c);
-          ++i;
-          continue;
-        }
-        std::string code = data.substr(i + 1, j - (i + 1));
-        uint64_t    id   = 0;
-        if (!base62_decode(code, id)) {
-          out.push_back(c);
-          ++i;
-          continue;
-        }
-        auto it = dict_.id_to_word.find(id);
-        if (it == dict_.id_to_word.end()) {
-          out.push_back(c);
-          ++i;
-          continue;
-        }
-        std::string w = it->second;
-        if (c == MC_CAP1)
-          w = apply_case_pattern(w, CasePattern::Capitalized);
-        else if (c == MC_ALLCAPS)
-          w = apply_case_pattern(w, CasePattern::Upper);
-        out += w;
-        i = j;
-        continue;
-      } else {
-        out.push_back(c);
-        ++i;
-        continue;
-      }
-    }
-    return out;
-  }
-
-private:
-  const Dictionary &dict_;
-};
-
-// Pipeline runner for build-dict
-static int cmd_build_dict(const std::string &input,
-                          const std::string &dict_path, bool embed, bool suffix,
-                          uint64_t min_freq, int window) {
-  // Read input
-  std::ifstream in(input, std::ios::binary);
-  if (!in) {
-    std::fprintf(stderr, "Cannot open %s\n", input.c_str());
-    return 1;
-  }
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  std::string                data          = ss.str();
-  size_t                     article_count = 0;
-  auto                       spans = Tokenizer::Tokenize(data, article_count);
-
-  DictionaryBuilder::Options dbopt;
-  dbopt.lowercase     = true;
-  dbopt.min_frequency = min_freq;
-  dbopt.position_cap  = 0;
-  DictionaryBuilder db(dbopt);
-  db.ingest_spans(spans);
-  std::vector<DictEntry> entries;
-  db.finalize(entries);
-  if (suffix)
-    DictionaryBuilder::augment_with_suffixes(entries);
-
-  // Prune non-optimal entries and keep only useful roots/suffixes
-  auto provisional_order = entries; // frequency-sorted
-  std::unordered_map<std::string, uint64_t> provisional_id;
-  for (size_t i = 0; i < provisional_order.size(); ++i)
-    provisional_id[provisional_order[i].word] = (uint64_t)i;
-  auto code_len = [&](const std::string &w) {
-    auto it = provisional_id.find(w);
-    if (it == provisional_id.end())
-      return (size_t)SIZE_MAX;
-    return (size_t)1 + base62_encode(it->second).size();
-  };
-  std::unordered_set<std::string> keep_words;
-  std::unordered_set<std::string> keep_parts; // roots/suffixes contributing to useful splits
-  // Mark original "whole words" that are actually token words (positions non-empty)
-  for (auto &e : entries) {
-    const std::string &w = e.word;
-    size_t raw_len       = w.size();
-    size_t enc_len       = code_len(w);
-    bool   is_token_word = !e.positions.empty();
-    if (is_token_word && enc_len < raw_len)
-      keep_words.insert(w);
-  }
-  // Evaluate splits to mark useful roots/suffixes
-  if (suffix) {
-    std::unordered_set<std::string> entry_set;
-    entry_set.reserve(entries.size() * 2);
-    for (auto &e : entries)
-      entry_set.insert(e.word);
-    for (auto &e : entries) {
-      if (e.positions.empty())
-        continue; // only consider real token words as split targets
-      const std::string &w = e.word;
-      size_t             raw_len = w.size();
-      if (w.size() >= 6) {
-        for (size_t slen = 2; slen <= 6 && slen < w.size(); ++slen) {
-          std::string root = w.substr(0, w.size() - slen);
-          std::string suf  = w.substr(w.size() - slen);
-          if (!entry_set.count(root) || !entry_set.count(suf))
-            continue;
-          size_t len_split = code_len(root) + code_len(suf);
-          if (len_split < raw_len) {
-            keep_parts.insert(root);
-            keep_parts.insert(suf);
-          }
-        }
-      }
-    }
-  }
-  // Build pruned list
-  std::vector<DictEntry> pruned;
-  pruned.reserve(entries.size());
-  for (auto &e : entries) {
-    const std::string &w = e.word;
-    bool is_token_word    = !e.positions.empty();
-    if (is_token_word) {
-      if (keep_words.count(w))
-        pruned.push_back(e);
-    } else { // augmented root/suffix entries
-      if (keep_parts.count(w))
-        pruned.push_back(e);
-    }
-  }
-  entries.swap(pruned);
-
-  // Assign IDs strictly by frequency to guarantee shortest codes
-  // for the most common words (e.g., "the" gets id 0 => code 'a').
-  std::vector<DictEntry> freq_sorted = entries;
-  std::sort(freq_sorted.begin(), freq_sorted.end(), [](const DictEntry &a, const DictEntry &b) {
-    if (a.count != b.count) return a.count > b.count;
-    return a.word < b.word;
-  });
-  std::unordered_map<std::string, uint64_t> idmap;
-  idmap.reserve(freq_sorted.size());
-  for (size_t i = 0; i < freq_sorted.size(); ++i)
-    idmap[freq_sorted[i].word] = (uint64_t)i;
-
-  // Prepare output entries; sort alphabetically by word as requested
-  std::vector<std::pair<std::string, uint64_t>> out;
-  out.reserve(entries.size());
-  for (auto &e : entries) {
-    auto it = idmap.find(e.word);
-    if (it != idmap.end())
-      out.emplace_back(e.word, it->second);
-  }
-  std::sort(out.begin(), out.end(),
-            [](auto &a, auto &b) { return a.first < b.first; });
-
-  if (!Dictionary::Save(dict_path, out)) {
-    std::fprintf(stderr, "Failed to save dict %s\n", dict_path.c_str());
-    return 1;
-  }
-  std::printf("Dictionary entries: %zu\n", out.size());
-  std::printf("Articles detected: %zu\n", article_count);
   return 0;
 }
 
+static int code_byte_length(int idx) {
+  if (idx < kBoundary1) return 1;
+  if (idx < kBoundary2) return 2;
+  if (idx < kBoundary3) return 3;
+  return 0;
+}
+
+static void emit_code_bytes(unsigned int bytes, std::string &out) {
+  out.push_back((unsigned char)(bytes & 0xFF));
+  if (bytes & 0xFF00)
+    out.push_back((unsigned char)((bytes >> 8) & 0xFF));
+  if (bytes & 0xFF0000)
+    out.push_back((unsigned char)((bytes >> 16) & 0xFF));
+}
+
+static void emit_literal_byte(unsigned char c, std::string &out) {
+  if (c == kEndUpper || c == kEscape || c == kUppercase ||
+      c == kCapitalized || c >= 0x80) {
+    out.push_back(kEscape);
+  }
+  out.push_back(c);
+}
+
+// ---------------------------------------------------------------------------
+// Dictionary: maps words <-> indices
+// ---------------------------------------------------------------------------
+struct DictCodec {
+  std::unordered_map<std::string, int> word_to_idx;
+  std::vector<std::string>             idx_to_word;
+  unsigned int                         longest_word = 0;
+
+  int size() const { return (int)idx_to_word.size(); }
+
+  bool load_cmix_format(const std::string &path) {
+    word_to_idx.clear();
+    idx_to_word.clear();
+    longest_word = 0;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::string line;
+    while (std::getline(in, line)) {
+      std::string word;
+      for (char c : line) {
+        if (c >= 'a' && c <= 'z') word += c;
+        else if (!word.empty()) break;
+      }
+      if (word.empty()) continue;
+      if ((int)idx_to_word.size() >= kMaxDictSize) break;
+      if (word.size() > longest_word) longest_word = (unsigned int)word.size();
+      int idx = (int)idx_to_word.size();
+      word_to_idx[word] = idx;
+      idx_to_word.push_back(word);
+    }
+    return !idx_to_word.empty();
+  }
+
+  bool save_cmix_format(const std::string &path) const {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    for (const auto &w : idx_to_word)
+      out << w << "\n";
+    return true;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Encoder: transforms text -> binary using dictionary (high-byte codes)
+// ---------------------------------------------------------------------------
+class HBEncoder {
+public:
+  HBEncoder(const DictCodec &dict) : dict_(dict) {}
+
+  std::string encode(const std::string &input) const {
+    std::string out;
+    out.reserve(input.size());
+
+    std::string word;
+    int num_upper = 0, num_lower = 0;
+    int len = (int)input.size();
+
+    for (int pos = 0; pos < len; ++pos) {
+      unsigned char c = input[pos];
+      bool advance = false;
+
+      if (word.size() > dict_.longest_word) {
+        advance = true;
+      } else if (c >= 'a' && c <= 'z') {
+        if (num_upper > 1) {
+          advance = true;
+        } else {
+          ++num_lower;
+          word += c;
+        }
+      } else if (c >= 'A' && c <= 'Z') {
+        if (num_lower > 0) {
+          advance = true;
+        } else {
+          ++num_upper;
+          word += (char)(c - 'A' + 'a');
+        }
+      } else {
+        advance = true;
+      }
+
+      if (pos == len - 1 && !advance) {
+        encode_word(word, num_upper, false, out);
+      }
+      if (advance) {
+        if (word.empty()) {
+          emit_literal_byte(c, out);
+        } else {
+          bool next_lower = (c >= 'a' && c <= 'z');
+          encode_word(word, num_upper, next_lower, out);
+          num_lower = 0;
+          num_upper = 0;
+          word.clear();
+          if (next_lower) {
+            ++num_lower;
+            word += c;
+          } else if (c >= 'A' && c <= 'Z') {
+            ++num_upper;
+            word += (char)(c - 'A' + 'a');
+          } else {
+            emit_literal_byte(c, out);
+          }
+          if (pos == len - 1 && !word.empty()) {
+            encode_word(word, num_upper, false, out);
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  struct Stats {
+    int64_t total_words_seen  = 0;
+    int64_t words_encoded     = 0;
+    int64_t words_substring   = 0;
+    int64_t bytes_raw         = 0;
+    int64_t bytes_encoded     = 0;
+  };
+
+  Stats compute_stats(const std::string &input) const {
+    Stats st;
+    st.bytes_raw = (int64_t)input.size();
+    std::string encoded = encode(input);
+    st.bytes_encoded = (int64_t)encoded.size();
+
+    std::string word;
+    int num_upper = 0, num_lower = 0;
+    int len = (int)input.size();
+    for (int pos = 0; pos < len; ++pos) {
+      unsigned char c = input[pos];
+      bool advance = false;
+      if (word.size() > dict_.longest_word) advance = true;
+      else if (c >= 'a' && c <= 'z') {
+        if (num_upper > 1) advance = true;
+        else { ++num_lower; word += c; }
+      } else if (c >= 'A' && c <= 'Z') {
+        if (num_lower > 0) advance = true;
+        else { ++num_upper; word += (char)(c - 'A' + 'a'); }
+      } else advance = true;
+
+      auto flush_word = [&]() {
+        if (word.empty()) return;
+        st.total_words_seen++;
+        auto it = dict_.word_to_idx.find(word);
+        if (it != dict_.word_to_idx.end()) st.words_encoded++;
+        word.clear(); num_upper = 0; num_lower = 0;
+      };
+
+      if (pos == len - 1 && !advance) flush_word();
+      if (advance) {
+        flush_word();
+        if (c >= 'a' && c <= 'z') { word += c; num_lower = 1; }
+        else if (c >= 'A' && c <= 'Z') { word += (char)(c-'A'+'a'); num_upper = 1; }
+        if (pos == len - 1 && !word.empty()) flush_word();
+      }
+    }
+    return st;
+  }
+
+private:
+  const DictCodec &dict_;
+
+  void encode_word(const std::string &word, int num_upper, bool next_lower,
+                   std::string &out) const {
+    if (num_upper > 1) out.push_back(kUppercase);
+    else if (num_upper == 1) out.push_back(kCapitalized);
+
+    auto it = dict_.word_to_idx.find(word);
+    if (it != dict_.word_to_idx.end()) {
+      emit_code_bytes(index_to_bytes(it->second), out);
+    } else if (!encode_substring(word, out)) {
+      for (char c : word)
+        out.push_back((unsigned char)c);
+    }
+
+    if (num_upper > 1 && next_lower)
+      out.push_back(kEndUpper);
+  }
+
+  bool encode_substring(const std::string &word, std::string &out) const {
+    if (word.size() <= 7) return false;
+    unsigned int sz = (unsigned int)word.size() - 1;
+    if (sz > dict_.longest_word) sz = dict_.longest_word;
+
+    // Try suffix match (emit literal prefix + code for suffix)
+    std::string suffix = word.substr(word.size() - sz, sz);
+    while (suffix.size() >= 7) {
+      auto it = dict_.word_to_idx.find(suffix);
+      if (it != dict_.word_to_idx.end()) {
+        for (unsigned int i = 0; i < word.size() - suffix.size(); ++i)
+          out.push_back((unsigned char)word[i]);
+        emit_code_bytes(index_to_bytes(it->second), out);
+        return true;
+      }
+      suffix.erase(0, 1);
+    }
+    // Try prefix match (code for prefix + literal suffix)
+    std::string prefix = word.substr(0, sz);
+    while (prefix.size() >= 7) {
+      auto it = dict_.word_to_idx.find(prefix);
+      if (it != dict_.word_to_idx.end()) {
+        emit_code_bytes(index_to_bytes(it->second), out);
+        for (unsigned int i = (unsigned int)prefix.size(); i < word.size(); ++i)
+          out.push_back((unsigned char)word[i]);
+        return true;
+      }
+      prefix.erase(prefix.size() - 1, 1);
+    }
+    return false;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Decoder: transforms binary -> text using dictionary
+// ---------------------------------------------------------------------------
+class HBDecoder {
+public:
+  HBDecoder(const DictCodec &dict) : dict_(dict) {}
+
+  std::string decode(const std::string &input) const {
+    std::string out;
+    out.reserve(input.size() * 2);
+    bool decode_upper = false, decode_capital = false;
+    size_t pos = 0;
+
+    while (pos < input.size()) {
+      unsigned char c = input[pos++];
+
+      if (c == kEscape) {
+        decode_upper = false;
+        if (pos < input.size())
+          out.push_back(input[pos++]);
+      } else if (c == kUppercase) {
+        decode_upper = true;
+      } else if (c == kCapitalized) {
+        decode_capital = true;
+      } else if (c == kEndUpper) {
+        decode_upper = false;
+      } else if (c >= 0x80) {
+        unsigned int bytes = c;
+        if (c > 0xCF && pos < input.size()) {
+          unsigned char c2 = input[pos++];
+          bytes += (unsigned int)c2 << 8;
+          if (c2 > 0xCF && pos < input.size()) {
+            unsigned char c3 = input[pos++];
+            bytes += (unsigned int)c3 << 16;
+          }
+        }
+        int idx = bytes_to_index(bytes);
+        if (idx >= 0 && idx < dict_.size()) {
+          const std::string &word = dict_.idx_to_word[idx];
+          for (size_t i = 0; i < word.size(); ++i) {
+            char ch = word[i];
+            if (i == 0 && decode_capital) {
+              ch = (ch - 'a') + 'A';
+              decode_capital = false;
+            }
+            if (decode_upper)
+              ch = (ch - 'a') + 'A';
+            out.push_back(ch);
+          }
+        }
+      } else {
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
+          decode_upper = false;
+        if (decode_capital || decode_upper) {
+          if (c >= 'a' && c <= 'z')
+            c = (c - 'a') + 'A';
+        }
+        if (decode_capital) decode_capital = false;
+        out.push_back(c);
+      }
+    }
+    return out;
+  }
+
+private:
+  const DictCodec &dict_;
+
+  static int bytes_to_index(unsigned int bytes) {
+    unsigned char b0 = bytes & 0xFF;
+    unsigned char b1 = (bytes >> 8) & 0xFF;
+    unsigned char b2 = (bytes >> 16) & 0xFF;
+
+    if (b0 >= 0x80 && b0 <= 0xCF) {
+      // Tier 1: single byte
+      return b0 - 0x80;
+    }
+    if (b0 >= 0xD0) {
+      if (b1 >= 0x80 && b1 <= 0xCF) {
+        // Tier 2: two bytes, second byte in 0x80..0xCF
+        return kBoundary1 + (b0 - 0xD0) * 80 + (b1 - 0x80);
+      }
+      if (b0 >= 0xF0 && b1 >= 0xD0 && b2 >= 0x80) {
+        // Tier 3: three bytes
+        return kBoundary2 + (b0 - 0xF0) * 32 * 80 + (b1 - 0xD0) * 80 + (b2 - 0x80);
+      }
+    }
+    return -1;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Byte-level entropy computation
+// ---------------------------------------------------------------------------
+static double byte_entropy(const std::string &data) {
+  if (data.empty()) return 0.0;
+  uint64_t freq[256] = {};
+  for (unsigned char c : data) freq[c]++;
+  double ent = 0.0;
+  double n = (double)data.size();
+  for (int i = 0; i < 256; ++i) {
+    if (freq[i] == 0) continue;
+    double p = freq[i] / n;
+    ent -= p * std::log2(p);
+  }
+  return ent;
+}
+
+static int count_distinct_bytes(const std::string &data) {
+  bool seen[256] = {};
+  for (unsigned char c : data) seen[c] = true;
+  int count = 0;
+  for (int i = 0; i < 256; ++i) if (seen[i]) count++;
+  return count;
+}
+
+// ---------------------------------------------------------------------------
+// Dictionary builder: frequency-optimal with pruning
+// ---------------------------------------------------------------------------
+struct WordStats {
+  std::string word;
+  uint64_t    count = 0;
+};
+
+class DictBuilder {
+public:
+  void scan(const std::string &data) {
+    std::string word;
+    int num_upper = 0, num_lower = 0;
+
+    for (size_t i = 0; i < data.size(); ++i) {
+      unsigned char c = data[i];
+      bool advance = false;
+
+      if (c >= 'a' && c <= 'z') {
+        if (num_upper > 1) advance = true;
+        else { ++num_lower; word += c; }
+      } else if (c >= 'A' && c <= 'Z') {
+        if (num_lower > 0) advance = true;
+        else { ++num_upper; word += (char)(c - 'A' + 'a'); }
+      } else {
+        advance = true;
+      }
+
+      if (i == data.size() - 1 && !advance) {
+        add_word(word);
+        word.clear(); num_upper = 0; num_lower = 0;
+      }
+      if (advance) {
+        if (!word.empty()) {
+          add_word(word);
+          num_lower = 0; num_upper = 0; word.clear();
+          if (c >= 'a' && c <= 'z') { ++num_lower; word += c; }
+          else if (c >= 'A' && c <= 'Z') { ++num_upper; word += (char)(c-'A'+'a'); }
+          if (i == data.size() - 1 && !word.empty()) {
+            add_word(word);
+            word.clear();
+          }
+        }
+      }
+    }
+  }
+
+  std::vector<WordStats> get_sorted() const {
+    std::vector<WordStats> result;
+    result.reserve(freq_.size());
+    for (auto &kv : freq_)
+      result.push_back({kv.first, kv.second});
+    std::sort(result.begin(), result.end(), [](auto &a, auto &b) {
+      if (a.count != b.count) return a.count > b.count;
+      return a.word < b.word;
+    });
+    return result;
+  }
+
+private:
+  std::unordered_map<std::string, uint64_t> freq_;
+
+  void add_word(const std::string &w) {
+    if (!w.empty()) freq_[w]++;
+  }
+};
+
+// Build an optimized dictionary: greedily assign slots to maximize savings
+static DictCodec build_optimal_dict(const std::vector<WordStats> &candidates,
+                                    int max_entries, bool verbose) {
+  DictCodec dict;
+
+  // For each slot i, the code costs code_byte_length(i) bytes.
+  // A word W at slot i saves: count(W) * (len(W) - codelen(i)) bytes per occurrence.
+  // We greedily assign the word with highest savings to each slot.
+  //
+  // Since tier boundaries are at 80-3920-44880, we compute savings per tier:
+
+  struct Candidate {
+    int         orig_idx;
+    std::string word;
+    uint64_t    count;
+    int64_t     savings; // computed per-tier
+  };
+
+  std::vector<Candidate> cands;
+  cands.reserve(candidates.size());
+  for (int i = 0; i < (int)candidates.size(); ++i) {
+    auto &ws = candidates[i];
+    if (ws.word.empty() || ws.word.size() <= 1) continue; // 1-char words: min code=1, saves 0
+    cands.push_back({i, ws.word, ws.count, 0});
+  }
+
+  // Fill slots greedily, tier by tier
+  int slot = 0;
+  int64_t total_savings = 0;
+
+  auto fill_tier = [&](int tier_end, int code_len) {
+    // Compute savings for this tier
+    for (auto &c : cands)
+      c.savings = (int64_t)c.count * ((int64_t)c.word.size() - code_len);
+    // Sort by savings descending
+    std::sort(cands.begin(), cands.end(), [](auto &a, auto &b) {
+      return a.savings > b.savings;
+    });
+    // Assign slots
+    std::vector<Candidate> remaining;
+    for (auto &c : cands) {
+      if (slot >= tier_end || slot >= max_entries) {
+        remaining.push_back(c);
+        continue;
+      }
+      if (c.savings <= 0) {
+        remaining.push_back(c);
+        continue;
+      }
+      dict.word_to_idx[c.word] = slot;
+      dict.idx_to_word.push_back(c.word);
+      if (c.word.size() > dict.longest_word)
+        dict.longest_word = (unsigned int)c.word.size();
+      total_savings += c.savings;
+      slot++;
+    }
+    cands = std::move(remaining);
+  };
+
+  fill_tier(kBoundary1, 1);
+  fill_tier(kBoundary2, 2);
+  fill_tier(kBoundary3, 3);
+
+  if (verbose) {
+    std::fprintf(stderr, "Dictionary: %d entries, estimated savings: %lld bytes\n",
+                 dict.size(), (long long)total_savings);
+    std::fprintf(stderr, "  Tier 1 (1-byte): %d entries\n", std::min(dict.size(), kBoundary1));
+    std::fprintf(stderr, "  Tier 2 (2-byte): %d entries\n",
+                 std::max(0, std::min(dict.size(), kBoundary2) - kBoundary1));
+    std::fprintf(stderr, "  Tier 3 (3-byte): %d entries\n",
+                 std::max(0, dict.size() - kBoundary2));
+    std::fprintf(stderr, "Top 20 words:\n");
+    for (int i = 0; i < std::min(20, dict.size()); ++i) {
+      auto &w = dict.idx_to_word[i];
+      std::fprintf(stderr, "  [%d] '%s' (code=%d bytes)\n",
+                   i, w.c_str(), code_byte_length(i));
+    }
+  }
+
+  return dict;
+}
+
+// ---------------------------------------------------------------------------
+// File I/O helpers
+// ---------------------------------------------------------------------------
 static bool load_file(const std::string &path, std::string &data) {
   std::ifstream in(path, std::ios::binary);
-  if (!in)
-    return false;
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  data = ss.str();
+  if (!in) return false;
+  in.seekg(0, std::ios::end);
+  size_t sz = in.tellg();
+  in.seekg(0, std::ios::beg);
+  data.resize(sz);
+  in.read(&data[0], sz);
   return true;
 }
+
 static bool save_file(const std::string &path, const std::string &data) {
   std::ofstream out(path, std::ios::binary);
-  if (!out)
-    return false;
+  if (!out) return false;
   out.write(data.data(), (std::streamsize)data.size());
   return (bool)out;
 }
 
-static int cmd_compress(const std::string &input, const std::string &dict_path,
-                        const std::string &output, bool suffix,
-                        bool prefer_suffix, bool force_suffix) {
-  std::string data;
-  if (!load_file(input, data)) {
-    std::fprintf(stderr, "Cannot open %s\n", input.c_str());
-    return 1;
-  }
-  size_t     dummy = 0;
-  auto       spans = Tokenizer::Tokenize(data, dummy);
-  Dictionary dict;
-  if (!Dictionary::Load(dict_path, dict)) {
-    std::fprintf(stderr, "Cannot read dict %s\n", dict_path.c_str());
-    return 1;
-  }
-  Compressor  comp(dict, suffix, prefer_suffix, force_suffix);
-  std::string encoded = comp.compress(spans);
-  if (!output.empty()) {
-    if (!save_file(output, encoded)) {
-      std::fprintf(stderr, "Cannot write %s\n", output.c_str());
-      return 1;
-    }
-  } else {
-    std::cout << encoded << std::endl;
-  }
-  return 0;
-}
-
-static int cmd_decompress(const std::string &input,
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+static int cmd_build_dict(const std::string &input_path,
                           const std::string &dict_path,
-                          const std::string &output) {
+                          int max_entries, bool verbose) {
+  std::fprintf(stderr, "Loading corpus: %s\n", input_path.c_str());
   std::string data;
-  if (!load_file(input, data)) {
-    std::fprintf(stderr, "Cannot open %s\n", input.c_str());
+  if (!load_file(input_path, data)) {
+    std::fprintf(stderr, "Cannot open %s\n", input_path.c_str());
     return 1;
   }
-  Dictionary dict;
-  if (!Dictionary::Load(dict_path, dict)) {
-    std::fprintf(stderr, "Cannot read dict %s\n", dict_path.c_str());
+  std::fprintf(stderr, "Corpus size: %zu bytes\n", data.size());
+
+  std::fprintf(stderr, "Scanning word frequencies...\n");
+  DictBuilder builder;
+  builder.scan(data);
+  auto candidates = builder.get_sorted();
+  std::fprintf(stderr, "Unique words found: %zu\n", candidates.size());
+
+  std::fprintf(stderr, "Building optimal dictionary (max %d entries)...\n", max_entries);
+  DictCodec dict = build_optimal_dict(candidates, max_entries, verbose);
+
+  if (!dict.save_cmix_format(dict_path)) {
+    std::fprintf(stderr, "Failed to save dictionary to %s\n", dict_path.c_str());
     return 1;
   }
-  Decompressor dec(dict);
-  std::string  plain = dec.decompress(data);
-  if (!output.empty()) {
-    if (!save_file(output, plain)) {
-      std::fprintf(stderr, "Cannot write %s\n", output.c_str());
-      return 1;
-    }
-  } else {
-    std::cout << plain << std::endl;
+  std::fprintf(stderr, "Saved dictionary: %s (%d entries)\n", dict_path.c_str(), dict.size());
+
+  if (data.size() > 0) {
+    HBEncoder enc(dict);
+    auto stats = enc.compute_stats(data);
+    std::fprintf(stderr, "\nQuick stats on training corpus:\n");
+    std::fprintf(stderr, "  Words seen:     %lld\n", (long long)stats.total_words_seen);
+    std::fprintf(stderr, "  Words encoded:  %lld (%.1f%%)\n",
+                 (long long)stats.words_encoded,
+                 100.0 * stats.words_encoded / std::max((int64_t)1, stats.total_words_seen));
+    std::fprintf(stderr, "  Raw size:       %lld bytes\n", (long long)stats.bytes_raw);
+    std::fprintf(stderr, "  Encoded size:   %lld bytes\n", (long long)stats.bytes_encoded);
+    std::fprintf(stderr, "  Saved:          %lld bytes (%.2f%%)\n",
+                 (long long)(stats.bytes_raw - stats.bytes_encoded),
+                 100.0 * (stats.bytes_raw - stats.bytes_encoded) / std::max((int64_t)1, stats.bytes_raw));
   }
+
   return 0;
 }
 
-static int cmd_test(const std::string &str, const std::string &input,
-                    const std::string &dict_out, bool embed, bool suffix,
-                    bool prefer_suffix, bool force_suffix, uint64_t min_freq,
-                    int window, const std::string &outbin) {
+static int cmd_compress(const std::string &input_path,
+                        const std::string &dict_path,
+                        const std::string &output_path) {
+  DictCodec dict;
+  if (!dict.load_cmix_format(dict_path)) {
+    std::fprintf(stderr, "Cannot load dictionary: %s\n", dict_path.c_str());
+    return 1;
+  }
+  std::fprintf(stderr, "Dictionary loaded: %d entries\n", dict.size());
+
   std::string data;
-  if (!str.empty())
-    data = str;
-  else if (!input.empty()) {
-    if (!load_file(input, data)) {
-      std::fprintf(stderr, "Cannot open %s\n", input.c_str());
-      return 1;
-    }
-  } else {
-    std::fprintf(stderr, "Provide --string or --input\n");
+  if (!load_file(input_path, data)) {
+    std::fprintf(stderr, "Cannot open input: %s\n", input_path.c_str());
     return 1;
   }
 
-  // Build dict in-memory and optionally save
-  size_t                     article_count = 0;
-  auto                       spans = Tokenizer::Tokenize(data, article_count);
-  DictionaryBuilder::Options dbopt;
-  dbopt.lowercase     = true;
-  dbopt.min_frequency = min_freq;
-  dbopt.position_cap  = 0;
-  DictionaryBuilder db(dbopt);
-  db.ingest_spans(spans);
-  std::vector<DictEntry> entries;
-  db.finalize(entries);
-  if (suffix)
-    DictionaryBuilder::augment_with_suffixes(entries);
-  EmbeddingPreprocessor::Options eopt;
-  eopt.enable = embed;
-  eopt.window = window;
-  EmbeddingPreprocessor ep(eopt);
-  ep.build_graph(spans);
-  std::vector<std::string>                  ordered = ep.reorder_words(entries);
-  std::unordered_map<std::string, uint64_t> idmap;
-  for (size_t i = 0; i < ordered.size(); ++i)
-    idmap[ordered[i]] = (uint64_t)i;
-  std::vector<std::pair<std::string, uint64_t>> out;
-  for (auto &e : entries)
-    out.emplace_back(e.word, idmap[e.word]);
-  std::sort(out.begin(), out.end(),
-            [](auto &a, auto &b) { return a.first < b.first; });
+  HBEncoder enc(dict);
+  std::string encoded = enc.encode(data);
 
-  Dictionary dict;
-  for (auto &kv : out) {
-    dict.word_to_id[kv.first]  = kv.second;
-    dict.id_to_word[kv.second] = kv.first;
+  if (!save_file(output_path, encoded)) {
+    std::fprintf(stderr, "Cannot write output: %s\n", output_path.c_str());
+    return 1;
   }
-  if (!dict_out.empty())
-    Dictionary::Save(dict_out, out);
 
-  Compressor   comp(dict, suffix, prefer_suffix, force_suffix);
-  std::string  encoded = comp.compress(spans);
-  Decompressor dec(dict);
-  std::string  plain = dec.decompress(encoded);
-
-  std::cout << "Compressed:\n" << encoded << "\n\n";
-  std::cout << "Roundtrip OK: " << (plain == data ? "YES" : "NO") << "\n";
-  if (!outbin.empty())
-    save_file(outbin, encoded);
+  std::fprintf(stderr, "Input:   %zu bytes\n", data.size());
+  std::fprintf(stderr, "Output:  %zu bytes (%.2f%% of original)\n",
+               encoded.size(), 100.0 * encoded.size() / data.size());
+  std::fprintf(stderr, "Entropy: %.4f bits/byte\n", byte_entropy(encoded));
+  std::fprintf(stderr, "Alphabet: %d distinct bytes\n", count_distinct_bytes(encoded));
   return 0;
 }
 
-// Minimal unit test stubs
-static void unit_tests() {
-  // base62
-  for (uint64_t v : {0ULL, 1ULL, 61ULL, 62ULL, 12345ULL, (1ULL << 40)}) {
-    auto     s  = base62_encode(v);
-    uint64_t r  = 0;
-    bool     ok = base62_decode(s, r);
-    if (!ok || r != v)
-      std::fprintf(stderr, "base62 fail %s\n", s.c_str());
+static int cmd_decompress(const std::string &input_path,
+                          const std::string &dict_path,
+                          const std::string &output_path) {
+  DictCodec dict;
+  if (!dict.load_cmix_format(dict_path)) {
+    std::fprintf(stderr, "Cannot load dictionary: %s\n", dict_path.c_str());
+    return 1;
+  }
+
+  std::string data;
+  if (!load_file(input_path, data)) {
+    std::fprintf(stderr, "Cannot open input: %s\n", input_path.c_str());
+    return 1;
+  }
+
+  HBDecoder dec(dict);
+  std::string decoded = dec.decode(data);
+
+  if (!save_file(output_path, decoded)) {
+    std::fprintf(stderr, "Cannot write output: %s\n", output_path.c_str());
+    return 1;
+  }
+
+  std::fprintf(stderr, "Input:   %zu bytes\n", data.size());
+  std::fprintf(stderr, "Output:  %zu bytes\n", decoded.size());
+  return 0;
+}
+
+static int cmd_analyze(const std::string &input_path,
+                       const std::string &dict_path) {
+  DictCodec dict;
+  if (!dict.load_cmix_format(dict_path)) {
+    std::fprintf(stderr, "Cannot load dictionary: %s\n", dict_path.c_str());
+    return 1;
+  }
+
+  std::string data;
+  if (!load_file(input_path, data)) {
+    std::fprintf(stderr, "Cannot open input: %s\n", input_path.c_str());
+    return 1;
+  }
+
+  HBEncoder enc(dict);
+  std::string encoded = enc.encode(data);
+  auto stats = enc.compute_stats(data);
+
+  HBDecoder dec(dict);
+  std::string roundtrip = dec.decode(encoded);
+  bool rt_ok = (roundtrip == data);
+
+  std::printf("=== Dictionary Analysis ===\n");
+  std::printf("Dictionary:       %s (%d entries)\n", dict_path.c_str(), dict.size());
+  std::printf("Input:            %s (%zu bytes)\n", input_path.c_str(), data.size());
+  std::printf("Roundtrip:        %s\n", rt_ok ? "OK" : "FAILED");
+  std::printf("\n");
+  std::printf("--- Raw input ---\n");
+  std::printf("  Size:           %zu bytes\n", data.size());
+  std::printf("  Entropy:        %.4f bits/byte\n", byte_entropy(data));
+  std::printf("  Alphabet:       %d distinct bytes\n", count_distinct_bytes(data));
+  std::printf("  Est. compress:  %.0f bytes\n", data.size() * byte_entropy(data) / 8.0);
+  std::printf("\n");
+  std::printf("--- Encoded output ---\n");
+  std::printf("  Size:           %zu bytes (%.2f%% of original)\n",
+              encoded.size(), 100.0 * encoded.size() / data.size());
+  std::printf("  Entropy:        %.4f bits/byte\n", byte_entropy(encoded));
+  std::printf("  Alphabet:       %d distinct bytes\n", count_distinct_bytes(encoded));
+  std::printf("  Est. compress:  %.0f bytes\n", encoded.size() * byte_entropy(encoded) / 8.0);
+  std::printf("\n");
+  std::printf("--- Word statistics ---\n");
+  std::printf("  Total words:    %lld\n", (long long)stats.total_words_seen);
+  std::printf("  Encoded:        %lld (%.1f%%)\n", (long long)stats.words_encoded,
+              100.0 * stats.words_encoded / std::max((int64_t)1, stats.total_words_seen));
+  std::printf("  Bytes saved:    %lld\n", (long long)(stats.bytes_raw - stats.bytes_encoded));
+  std::printf("\n");
+
+  // Byte distribution of encoded output
+  uint64_t freq[256] = {};
+  for (unsigned char c : encoded) freq[c]++;
+  std::vector<std::pair<int, uint64_t>> bfreq;
+  for (int i = 0; i < 256; ++i) if (freq[i]) bfreq.push_back({i, freq[i]});
+  std::sort(bfreq.begin(), bfreq.end(), [](auto &a, auto &b) { return a.second > b.second; });
+  std::printf("--- Top 20 bytes in encoded output ---\n");
+  for (int i = 0; i < std::min(20, (int)bfreq.size()); ++i) {
+    int b = bfreq[i].first;
+    uint64_t cnt = bfreq[i].second;
+    double pct = 100.0 * cnt / encoded.size();
+    char ch_buf[8];
+    if (b >= 32 && b < 127) std::snprintf(ch_buf, sizeof(ch_buf), "'%c'", (char)b);
+    else std::snprintf(ch_buf, sizeof(ch_buf), "0x%02X", b);
+    std::printf("  byte %3d (%6s): %10llu (%5.2f%%)\n", b, ch_buf, (unsigned long long)cnt, pct);
+  }
+
+  uint64_t control = 0, ws = 0, printable = 0, high = 0;
+  for (int i = 0; i < 256; ++i) {
+    if (i < 32 && i != 9 && i != 10 && i != 13) control += freq[i];
+    else if (i == 9 || i == 10 || i == 13 || i == 32) ws += freq[i];
+    else if (i >= 33 && i <= 126) printable += freq[i];
+    else if (i >= 128) high += freq[i];
+  }
+  std::printf("\n--- Byte class distribution ---\n");
+  std::printf("  Control (no ws): %10llu (%5.2f%%)\n", (unsigned long long)control, 100.0*control/encoded.size());
+  std::printf("  Whitespace:      %10llu (%5.2f%%)\n", (unsigned long long)ws, 100.0*ws/encoded.size());
+  std::printf("  Printable ASCII: %10llu (%5.2f%%)\n", (unsigned long long)printable, 100.0*printable/encoded.size());
+  std::printf("  High (>=0x80):   %10llu (%5.2f%%)\n", (unsigned long long)high, 100.0*high/encoded.size());
+
+  return 0;
+}
+
+static int cmd_verify(const std::string &input_path,
+                      const std::string &dict_path) {
+  DictCodec dict;
+  if (!dict.load_cmix_format(dict_path)) {
+    std::fprintf(stderr, "Cannot load dictionary: %s\n", dict_path.c_str());
+    return 1;
+  }
+
+  std::string data;
+  if (!load_file(input_path, data)) {
+    std::fprintf(stderr, "Cannot open input: %s\n", input_path.c_str());
+    return 1;
+  }
+
+  HBEncoder enc(dict);
+  std::string encoded = enc.encode(data);
+
+  HBDecoder dec(dict);
+  std::string decoded = dec.decode(encoded);
+
+  if (decoded == data) {
+    std::printf("Roundtrip OK (%zu bytes -> %zu bytes -> %zu bytes)\n",
+                data.size(), encoded.size(), decoded.size());
+    return 0;
+  } else {
+    std::printf("Roundtrip FAILED!\n");
+    std::printf("  Original: %zu bytes\n", data.size());
+    std::printf("  Encoded:  %zu bytes\n", encoded.size());
+    std::printf("  Decoded:  %zu bytes\n", decoded.size());
+    size_t minlen = std::min(data.size(), decoded.size());
+    for (size_t i = 0; i < minlen; ++i) {
+      if (data[i] != decoded[i]) {
+        std::printf("  First diff at byte %zu: orig=0x%02X decoded=0x%02X\n",
+                    i, (unsigned char)data[i], (unsigned char)decoded[i]);
+        size_t ctx_start = i > 30 ? i - 30 : 0;
+        size_t ctx_end = std::min(data.size(), i + 30);
+        std::printf("  orig context: ");
+        for (size_t j = ctx_start; j < ctx_end; ++j) {
+          unsigned char c = data[j];
+          if (c >= 32 && c < 127) std::printf("%c", c);
+          else std::printf("\\x%02X", c);
+        }
+        std::printf("\n  dec  context: ");
+        for (size_t j = ctx_start; j < std::min(decoded.size(), ctx_end); ++j) {
+          unsigned char c = decoded[j];
+          if (c >= 32 && c < 127) std::printf("%c", c);
+          else std::printf("\\x%02X", c);
+        }
+        std::printf("\n");
+        break;
+      }
+    }
+    return 1;
   }
 }
 
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 static void print_usage() {
-  std::cout << "dictionary-compress\n"
-            << "  build-dict   --input file.txt --dict dict.dict [--embed] "
-               "[--suffix] [--min-frequency N] [--window-size N]\n"
-            << "  compress     --input file.txt --dict dict.dict --output "
-               "out.bin [--suffix]\n"
-            << "  decompress   --input out.bin --dict dict.dict --output "
-               "restored.txt\n"
-            << "  test-comp    [--embed] [--suffix] --string \"...\" | --input "
-               "file.txt [--dict out.dict] [--output out.bin] [--min-frequency "
-               "N] [--window-size N]\n";
+  std::printf(
+    "dictionary_compress -- High-byte dictionary preprocessor\n"
+    "\n"
+    "Usage:\n"
+    "  build-dict  --input CORPUS --dict OUTPUT.dic [--max-entries N] [--verbose]\n"
+    "  compress    --input FILE --dict DICT.dic --output OUT.bin\n"
+    "  decompress  --input FILE --dict DICT.dic --output OUT.txt\n"
+    "  analyze     --input FILE --dict DICT.dic\n"
+    "  verify      --input FILE --dict DICT.dic\n"
+    "\n"
+    "The dictionary format is one-word-per-line, compatible with cmix english.dic.\n"
+    "Words are ordered by dictionary index (position = code assignment).\n"
+    "The first 80 words get 1-byte codes (most valuable slots).\n"
+  );
 }
 
 int main(int argc, char **argv) {
-  unit_tests();
-  if (argc < 2) {
-    print_usage();
-    return 0;
-  }
+  if (argc < 2) { print_usage(); return 0; }
+
   std::string cmd = argv[1];
+  std::string input, dict_path, output;
+  int max_entries = kMaxDictSize;
+  bool verbose = false;
 
-  std::string input, dict_path, output, test_string, test_input, dict_out,
-      outbin;
-  bool     embed         = false;
-  bool     suffix        = false;
-  bool     prefer_suffix = false;
-  bool     force_suffix  = false;
-  uint64_t min_freq      = 1;
-  int      window        = 4;
-
-  auto     get           = [&](int &i) {
-    if (i + 1 >= argc) {
-      std::fprintf(stderr, "Missing value for %s\n", argv[i]);
-      std::exit(1);
-    }
-    return std::string(argv[++i]);
-  };
-  auto parse_common = [&](int start) {
-    for (int i = start; i < argc; ++i) {
-      std::string a = argv[i];
-      if (a == "--input")
-        input = get(i);
-      else if (a == "--dict")
-        dict_path = get(i);
-      else if (a == "--output")
-        output = get(i);
-      else if (a == "--string")
-        test_string = get(i);
-      else if (a == "--embed")
-        embed = true;
-      else if (a == "--min-frequency") {
-        min_freq = std::strtoull(get(i).c_str(), nullptr, 10);
-      } else if (a == "--window-size") {
-        window = std::atoi(get(i).c_str());
-      } else if (a == "--suffix") {
-        suffix = true;
-      } else if (a == "--prefer-suffix") {
-        prefer_suffix = true;
-      } else if (a == "--force-suffix") {
-        force_suffix = true;
-      } else if (a == "--dict-out" || a == "--dict_out" || a == "--dictout") {
-        dict_out = get(i);
-      } else {
-        std::fprintf(stderr, "Unknown arg: %s\n", a.c_str());
-      }
-    }
-  };
+  for (int i = 2; i < argc; ++i) {
+    std::string a = argv[i];
+    auto next = [&]() -> std::string {
+      if (i + 1 >= argc) { std::fprintf(stderr, "Missing value for %s\n", argv[i]); std::exit(1); }
+      return std::string(argv[++i]);
+    };
+    if (a == "--input") input = next();
+    else if (a == "--dict") dict_path = next();
+    else if (a == "--output") output = next();
+    else if (a == "--max-entries") max_entries = std::atoi(next().c_str());
+    else if (a == "--verbose") verbose = true;
+    else std::fprintf(stderr, "Unknown argument: %s\n", a.c_str());
+  }
 
   if (cmd == "build-dict") {
-    parse_common(2);
-    if (input.empty() || dict_path.empty()) {
-      print_usage();
-      return 1;
-    }
-    return cmd_build_dict(input, dict_path, embed, suffix, min_freq, window);
+    if (input.empty() || dict_path.empty()) { print_usage(); return 1; }
+    return cmd_build_dict(input, dict_path, max_entries, verbose);
   } else if (cmd == "compress") {
-    parse_common(2);
-    if (input.empty() || dict_path.empty()) {
-      print_usage();
-      return 1;
-    }
-    return cmd_compress(input, dict_path, output, suffix, prefer_suffix,
-                        force_suffix);
+    if (input.empty() || dict_path.empty() || output.empty()) { print_usage(); return 1; }
+    return cmd_compress(input, dict_path, output);
   } else if (cmd == "decompress") {
-    parse_common(2);
-    if (input.empty() || dict_path.empty()) {
-      print_usage();
-      return 1;
-    }
+    if (input.empty() || dict_path.empty() || output.empty()) { print_usage(); return 1; }
     return cmd_decompress(input, dict_path, output);
-  } else if (cmd == "test-comp") {
-    parse_common(2);
-    return cmd_test(test_string, test_input, dict_out, embed, suffix,
-                    prefer_suffix, force_suffix, min_freq, window, output);
+  } else if (cmd == "analyze") {
+    if (input.empty() || dict_path.empty()) { print_usage(); return 1; }
+    return cmd_analyze(input, dict_path);
+  } else if (cmd == "verify") {
+    if (input.empty() || dict_path.empty()) { print_usage(); return 1; }
+    return cmd_verify(input, dict_path);
   } else {
     print_usage();
     return 1;
