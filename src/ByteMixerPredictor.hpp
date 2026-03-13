@@ -54,7 +54,12 @@ public:
                      const std::vector<bool> &vocab = std::vector<bool>(256, true))
       : bit_context_(1), top_(255), mid_(0), bot_(0), vocab_(vocab),
         probs_(Eigen::VectorXf::Constant(256, 1.0f / 256)),
-        mixer_(0.07f), last_mix_p_(0.5f) {
+        last_mix_p_(0.5f) {
+
+    // 8 micro-mixers, one per bit position in byte
+    for (int i = 0; i < 8; ++i) {
+      mixers_[i] = MicroMixer(0.07f);
+    }
 
     vocab_size_ = 0;
     for (int i = 0; i < 256; ++i) {
@@ -88,14 +93,21 @@ public:
     float denom = probs_.segment(bot_, mid + 1 - bot_).sum() + num;
     float lstm_p = (denom == 0) ? 0.5f : num / denom;
 
-    // Micro-mixer learns optimal blend online
-    last_mix_p_ = mixer_.Mix(ppmd_p, lstm_p);
+    // Select micro-mixer by bit position (bit_context_ encodes position: 1,2,4,...,128)
+    int bit_pos = 0;
+    unsigned int bc = bit_context_ >> 1;
+    while (bc > 0) { ++bit_pos; bc >>= 1; }
+
+    last_mix_p_ = mixers_[bit_pos].Mix(ppmd_p, lstm_p);
     return last_mix_p_;
   }
 
   void Perceive(int bit) override {
-    // Update micro-mixer weights from actual outcome
-    mixer_.Update(bit);
+    // Update the bit-position mixer that made the last prediction
+    int bit_pos = 0;
+    unsigned int bc = bit_context_ >> 1;
+    while (bc > 0) { ++bit_pos; bc >>= 1; }
+    mixers_[bit_pos].Update(bit);
 
     ppmd_->Perceive(bit);
 
@@ -143,7 +155,7 @@ private:
   unsigned int vocab_size_;
   std::unique_ptr<PPMD::PPMD> ppmd_;
   std::unique_ptr<Lstm> lstm_;
-  MicroMixer mixer_;
+  MicroMixer mixers_[8];
   float last_mix_p_;
 };
 
