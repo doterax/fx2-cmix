@@ -11,9 +11,11 @@ static inline unsigned int DiscretizeLocal(float p) {
 
 GenericFullPredictor::GenericFullPredictor(const std::vector<bool> &vocab,
                                            int ppmd_order, int ppmd_mem_mb,
-                                           int lstm_bptt_depth)
+                                           int lstm_bptt_depth,
+                                           int lstm_bptt_period)
     : manager_(), sigmoid_(100001), vocab_(vocab), ppmd_order_(ppmd_order),
-      ppmd_mem_mb_(ppmd_mem_mb), lstm_bptt_depth_(lstm_bptt_depth) {
+      ppmd_mem_mb_(ppmd_mem_mb), lstm_bptt_depth_(lstm_bptt_depth),
+      lstm_bptt_period_(lstm_bptt_period) {
   stats_file_.open("predictor_stats.csv", std::ios::out | std::ios::trunc);
   // Header will be written later in AddMixers() after predictor names are known
 }
@@ -176,7 +178,7 @@ void GenericFullPredictor::AddMixers() {
   }
 
   //auto mixer = new NullMixer( vocab_size);
-  auto mixer = new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10, lstm_bptt_depth_);
+  auto mixer = new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10, lstm_bptt_depth_, lstm_bptt_period_);
 
   auto num_models = 1UL; //only main PPMD feeds into byte_mixer
   byte_mixer_.emplace(num_models, manager_.bit_context_, vocab_, vocab_size, mixer);

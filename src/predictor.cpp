@@ -4,9 +4,11 @@
 #include <vector>
 
 Predictor::Predictor(const std::vector<bool> &vocab, int ppmd_order,
-                     int ppmd_mem_mb, int lstm_bptt_depth)
+                     int ppmd_mem_mb, int lstm_bptt_depth,
+                     int lstm_bptt_period)
     : manager_(), sigmoid_(100001), vocab_(vocab), ppmd_order_(ppmd_order),
-      ppmd_mem_mb_(ppmd_mem_mb), lstm_bptt_depth_(lstm_bptt_depth) {
+      ppmd_mem_mb_(ppmd_mem_mb), lstm_bptt_depth_(lstm_bptt_depth),
+      lstm_bptt_period_(lstm_bptt_period) {
   AddBracket();
   AddPPMD();
   AddWord();
@@ -129,7 +131,7 @@ void Predictor::AddMixers() {
       ++vocab_size;
   }
   byte_mixer_.emplace(1, manager_.bit_context_, vocab_, vocab_size,
-                      new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10, lstm_bptt_depth_));
+                      new Lstm(vocab_size, vocab_size, 200, 1, 128, 0.03, 10, lstm_bptt_depth_, lstm_bptt_period_));
 
   for (int i = 0; i < 2; ++i) {
     layers_.emplace_back(sigmoid_, 1.0e-4);

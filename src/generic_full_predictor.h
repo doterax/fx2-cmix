@@ -44,7 +44,8 @@ class FXCM; // forward declaration in global scope
 class GenericFullPredictor : public IPredictor {
 public:
   GenericFullPredictor(const std::vector<bool> &vocab, int ppmd_order = 25,
-                       int ppmd_mem_mb = 1024, int lstm_bptt_depth = 0);
+                       int ppmd_mem_mb = 1024, int lstm_bptt_depth = 0,
+                       int lstm_bptt_period = 1);
   // Prediction API
   float Predict() override;
   void  Perceive(int bit) override;
@@ -104,6 +105,7 @@ private:
   int ppmd_order_      = 25;
   int ppmd_mem_mb_     = 1024;
   int lstm_bptt_depth_ = 0;
+  int lstm_bptt_period_ = 1;
 
   // ByteMixer output override
   float byte_mixer_output_ = 0.0f;

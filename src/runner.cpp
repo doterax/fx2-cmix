@@ -110,8 +110,9 @@ void ReadHeader(std::ifstream *is, unsigned long long *length,
 
 std::unique_ptr<IPredictor> CreateFullPredictor(const std::vector<bool> &vocab,
                                                 int ppmd_order, int ppmd_mb,
-                                                int lstm_bptt_depth) {
-  return std::make_unique<Predictor>(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth);
+                                                int lstm_bptt_depth,
+                                                int lstm_bptt_period) {
+  return std::make_unique<Predictor>(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth, lstm_bptt_period);
 }
 
 std::unique_ptr<IPredictor> CreatePPMdPredictor(const std::vector<bool> &vocab,
@@ -126,8 +127,9 @@ std::unique_ptr<IPredictor> CreateGenericPredictor(const std::vector<bool> &voca
                                                    float mw_alpha,
                                                    float mw_min,
                                                    float mw_max,
-                                                   int lstm_bptt_depth) {
-  auto p = std::make_unique<GenericFullPredictor>(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth);
+                                                   int lstm_bptt_depth,
+                                                   int lstm_bptt_period) {
+  auto p = std::make_unique<GenericFullPredictor>(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth, lstm_bptt_period);
   // Explicitly wire all components to reflect flexible initialization
   p->InitFxcm();            // FXCM model
   p->AddBracket();          // Bracket + related contexts
@@ -151,15 +153,16 @@ std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
                                             float mw_alpha,
                                             float mw_min,
                                             float mw_max,
-                                            int lstm_bptt_depth) {
+                                            int lstm_bptt_depth,
+                                            int lstm_bptt_period) {
   if (type == EPredictorType::FULL) {
-    return CreateFullPredictor(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth);
+    return CreateFullPredictor(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth, lstm_bptt_period);
   } else if (type == EPredictorType::PPMD_ONLY) {
     return CreatePPMdPredictor(vocab, ppmd_order, ppmd_mb);
   } else if (type == EPredictorType::GENERIC) {
     return CreateGenericPredictor(vocab, ppmd_order, ppmd_mb,
                                   mw_enable, mw_alpha, mw_min, mw_max,
-                                  lstm_bptt_depth);
+                                  lstm_bptt_depth, lstm_bptt_period);
   }
   throw std::invalid_argument("Unknown predictor type");
 }
@@ -306,7 +309,8 @@ bool RunCompression(EPredictorType predictor_type, bool enable_preprocess,
                     double mw_alpha,
                     double mw_min,
                     double mw_max,
-                    int lstm_bptt_depth) {
+                    int lstm_bptt_depth,
+                    int lstm_bptt_period) {
   FILE *data_in = nullptr;
   if (fopen_s(&data_in, input_path.c_str(), "rb") != 0 || !data_in)
     return false;
@@ -352,7 +356,7 @@ bool RunCompression(EPredictorType predictor_type, bool enable_preprocess,
   WriteHeader(temp_bytes, vocab, dictionary != NULL, &data_out);
   auto p = CreatePredictor(vocab, predictor_type, ppmd_order, ppmd_mb,
                            mw_enable, (float)mw_alpha, (float)mw_min, (float)mw_max,
-                           lstm_bptt_depth);
+                           lstm_bptt_depth, lstm_bptt_period);
   if (enable_preprocess)
     preprocessor::Pretrain(p.get(), dictionary);
   Compress(temp_bytes, &temp_in, &data_out, output_bytes, p.get());
@@ -373,7 +377,8 @@ bool RunDecompression(EPredictorType     predictor_type,
                       double mw_alpha,
                       double mw_min,
                       double mw_max,
-                      int lstm_bptt_depth) {
+                      int lstm_bptt_depth,
+                      int lstm_bptt_period) {
   std::ifstream data_in(input_path, std::ios::in | std::ios::binary);
   if (!data_in.is_open())
     return false;
@@ -409,7 +414,7 @@ bool RunDecompression(EPredictorType     predictor_type,
   }
   auto p = CreatePredictor(vocab, predictor_type, ppmd_order, ppmd_mb,
                            mw_enable, (float)mw_alpha, (float)mw_min, (float)mw_max,
-                           lstm_bptt_depth);
+                           lstm_bptt_depth, lstm_bptt_period);
   if (dictionary_used)
     preprocessor::Pretrain(p.get(), dictionary);
 
@@ -477,6 +482,11 @@ int main(int argc, char **argv) {
   app.add_option("--lstm-bptt-depth", lstm_bptt_depth,
                  "LSTM truncated BPTT depth (0 = full horizon, default: 0)")
       ->check(CLI::Range(0, 1024));
+
+  int lstm_bptt_period = 1;
+  app.add_option("--lstm-bptt-period", lstm_bptt_period,
+                 "LSTM BPTT period (1 = every cycle, N = every Nth, default: 1)")
+      ->check(CLI::Range(1, 128));
 
   // Subcommands
   std::string input_path;
@@ -594,6 +604,9 @@ int main(int argc, char **argv) {
   if (lstm_bptt_depth > 0) {
     printf("Using LSTM BPTT depth: %d\n", lstm_bptt_depth);
   }
+  if (lstm_bptt_period > 1) {
+    printf("Using LSTM BPTT period: %d\n", lstm_bptt_period);
+  }
 
   clock_t start             = clock();
 
@@ -632,7 +645,7 @@ int main(int argc, char **argv) {
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
                 dictionary, &input_bytes, &output_bytes, ppmd_order,
                 ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-                lstm_bptt_depth)) {
+                lstm_bptt_depth, lstm_bptt_period)) {
       fprintf(stderr, "Error: Enwik9 decompression failed\n");
       return 1;
     }
@@ -668,7 +681,7 @@ int main(int argc, char **argv) {
     if (!RunCompression(predictor_type, enable_preprocess, input_path,
               temp_path, output_path, dictionary, &input_bytes,
               &output_bytes, ppmd_order, ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-              lstm_bptt_depth)) {
+              lstm_bptt_depth, lstm_bptt_period)) {
       fprintf(stderr, "Error: Compression failed\n");
       return 1;
     }
@@ -706,7 +719,7 @@ int main(int argc, char **argv) {
     if (!RunCompression(predictor_type, enable_preprocess, input_path,
               temp_path, output_path, dictionary, &input_bytes,
               &output_bytes, ppmd_order, ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-              lstm_bptt_depth)) {
+              lstm_bptt_depth, lstm_bptt_period)) {
       fprintf(stderr, "Error: Enwik9 compression failed\n");
       return 1;
     }
@@ -746,7 +759,7 @@ int main(int argc, char **argv) {
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
                 dictionary, &input_bytes, &output_bytes, ppmd_order,
                 ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-                lstm_bptt_depth)) {
+                lstm_bptt_depth, lstm_bptt_period)) {
       fprintf(stderr, "Error: Extract operation failed\n");
       return 1;
     }
@@ -758,7 +771,7 @@ int main(int argc, char **argv) {
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
                 dictionary, &input_bytes, &output_bytes, ppmd_order,
                 ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-                lstm_bptt_depth)) {
+                lstm_bptt_depth, lstm_bptt_period)) {
       fprintf(stderr, "Error: Decompression failed\n");
       return 1;
     }

@@ -15,7 +15,7 @@ class Lstm: public NMixer {
  public:
   Lstm(unsigned int input_size, unsigned int output_size, unsigned int
       num_cells, unsigned int num_layers, int horizon, float learning_rate,
-      float gradient_clip, int bptt_depth = 0);
+      float gradient_clip, int bptt_depth = 0, int bptt_period = 1);
   ~Lstm();
   Eigen::VectorXf& Perceive(unsigned int input) override;
   void SetInput(const Eigen::VectorXf& input) override;
@@ -35,6 +35,8 @@ private:
   float learning_rate_;
   unsigned int num_cells_, epoch_, horizon_, input_size_, output_size_;
   int bptt_depth_;
+  int bptt_period_;
+  int bptt_cycle_ = 0;
   int last_input_ = -1;
 };
 #include "lstm.hpp"

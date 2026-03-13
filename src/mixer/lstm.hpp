@@ -6,7 +6,7 @@
 
 inline Lstm::Lstm(unsigned int input_size, unsigned int output_size, unsigned int
     num_cells, unsigned int num_layers, int horizon, float learning_rate,
-    float gradient_clip, int bptt_depth) : input_history_(horizon),
+    float gradient_clip, int bptt_depth, int bptt_period) : input_history_(horizon),
     hidden_(Eigen::VectorXf::Zero(num_cells * num_layers + 1)), 
     hidden_error_(Eigen::VectorXf::Zero(num_cells)),
     layer_input_(horizon, std::vector<Eigen::VectorXf>(num_layers)),
@@ -14,7 +14,8 @@ inline Lstm::Lstm(unsigned int input_size, unsigned int output_size, unsigned in
     output_(horizon, Eigen::VectorXf::Constant(output_size, 1.0 / output_size)),
     learning_rate_(learning_rate), num_cells_(num_cells), epoch_(0),
     horizon_(horizon), input_size_(input_size), output_size_(output_size),
-    bptt_depth_(bptt_depth <= 0 ? horizon : std::min(bptt_depth, horizon)) {
+    bptt_depth_(bptt_depth <= 0 ? horizon : std::min(bptt_depth, horizon)),
+    bptt_period_(bptt_period < 1 ? 1 : bptt_period) {
   hidden_[hidden_.size() - 1] = 1;
   
   for (int epoch = 0; epoch < horizon; ++epoch) {
@@ -87,7 +88,8 @@ inline Eigen::VectorXf& Lstm::Perceive(unsigned int input) {
   if (last_epoch == -1) last_epoch = horizon_ - 1;
   int old_input = input_history_[last_epoch];
   input_history_[last_epoch] = input;
-  if (epoch_ == 0) {
+  if (epoch_ == 0 && ++bptt_cycle_ >= bptt_period_) {
+    bptt_cycle_ = 0;
     int bptt_start = horizon_ - bptt_depth_;
     for (int epoch = horizon_ - 1; epoch >= bptt_start; --epoch) {
       for (int layer = layers_.size() - 1; layer >= 0; --layer) {

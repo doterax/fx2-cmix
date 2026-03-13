@@ -143,6 +143,16 @@ every 2nd or 4th cycle, the weight updates are less frequent but still converge.
 **Risk:** Low. Online learning is already noisy; reducing update frequency trades
 slightly stale gradients for 2-4× speedup.
 
+**Implementation:** Opt-in `--lstm-bptt-period N` CLI option (default 1 = every cycle).
+A cycle counter `bptt_cycle_` in `Lstm` increments each time `epoch_ == 0`; BPTT only
+runs when the counter reaches `bptt_period_`.
+
+| Period | input (B) | Δ | Time (s) | Speedup vs default |
+|--------|-----------|------|----------|---------------------|
+| 1 (default) | 6,149 | — | 16.5 | 1.00× |
+| 2 | 6,161 | +0.20% | 14.8 | 1.11× |
+| 4 | 6,163 | +0.23% | 13.9 | 1.19× |
+
 #### 1c. Batch output layer update
 The output layer update loop is:
 ```cpp
@@ -667,7 +677,7 @@ profiles for an additional 5-10% speedup.
 | 7b | Reduce sigmoid table size | 1.02-1.05× | Minimal | Low | **P1** | — |
 | 12a | PGO build | 1.05-1.15× | None | Low | **P1** | ✅ Done |
 | 1a | LSTM truncated BPTT | 1.3-2× | Low-Med | Medium | **P2** | ✅ Done (opt-in `--lstm-bptt-depth`) |
-| 1b | Reduce BPTT frequency | 1.5-2× | Low | Medium | **P2** | — |
+| 1b | Reduce BPTT frequency | 1.1-1.2× | Low | Medium | **P2** | ✅ Done (opt-in `--lstm-bptt-period`) |
 | 5c | PPMd memset optimization | 1.02× | None | Low | **P2** | — |
 | 9 | SSE table size reduction | 1.05-1.1× | Needs testing | High | **P3** | — |
 
