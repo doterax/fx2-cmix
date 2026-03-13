@@ -27,8 +27,9 @@
 
 #include "PPMDPredictor.hpp"
 #include "LstmPredictor.hpp"
+#include "ByteMixerPredictor.hpp"
 
-enum class EPredictorType { FULL, PPMD_ONLY, GENERIC, LSTM_ONLY };
+enum class EPredictorType { FULL, PPMD_ONLY, GENERIC, LSTM_ONLY, BYTE_MIXER };
 
 namespace {
 const int kMinVocabFileSize = 10000;
@@ -171,6 +172,12 @@ std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
                                            128, 0.03f, 10.0f,
                                            lstm_bptt_depth, lstm_bptt_period,
                                            vocab);
+  } else if (type == EPredictorType::BYTE_MIXER) {
+    return std::make_unique<ByteMixerPredictor>(ppmd_order, ppmd_mb,
+                                                lstm_cells, lstm_layers,
+                                                128, 0.03f, 10.0f,
+                                                lstm_bptt_depth, lstm_bptt_period,
+                                                vocab);
   }
   throw std::invalid_argument("Unknown predictor type");
 }
@@ -475,8 +482,8 @@ int main(int argc, char **argv) {
 
   std::string predictor_name = "full";
   app.add_option("--predictor,-p", predictor_name,
-                 "Predictor type: 'full' (default), 'ppmd', 'generic', or 'lstm'")
-      ->check(CLI::IsMember({"full", "ppmd", "generic", "lstm"}));
+                 "Predictor type: 'full' (default), 'ppmd', 'generic', 'lstm', or 'bytemixer'")
+      ->check(CLI::IsMember({"full", "ppmd", "generic", "lstm", "bytemixer"}));
 
     // Experimental: mixer weighting controls (apply to 'generic')
     bool  mw_enable = false;
@@ -624,6 +631,9 @@ int main(int argc, char **argv) {
   } else if (predictor_name == "lstm") {
     predictor_type = EPredictorType::LSTM_ONLY;
     printf("Using predictor: LSTM only (%d cells, %d layers)\n", lstm_cells, lstm_layers);
+  } else if (predictor_name == "bytemixer") {
+    predictor_type = EPredictorType::BYTE_MIXER;
+    printf("Using predictor: ByteMixer (PPMd + LSTM, %d cells, %d layers)\n", lstm_cells, lstm_layers);
   } else {
     predictor_type = EPredictorType::FULL;
     printf("Using predictor: Full (all models)\n");

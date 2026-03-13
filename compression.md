@@ -32,6 +32,52 @@ Total benchmark time: 48.2 minutes.
 - **english.dic beats enwik9_optimal.dic:** Across all corpora, english.dic consistently outperforms enwik9_optimal.dic for the LSTM-only predictor (e.g., enwik7: 2,115,044 vs 2,213,633). This differs from the full predictor where specialized dictionaries can win.
 - **Processing speed is constant:** ~8,500 B/s raw, ~13,500 B/s with dictionary preprocessing (faster because dictionary-compressed data is shorter).
 
+### ByteMixer Baselines — PPMd + LSTM (200 cells, 1 layer, english.dic)
+
+#### v2: LSTM-only prediction (correct — no double-counting PPMd)
+
+`Predict()` returns LSTM bit decomposition directly. The LSTM already received PPMd byte probs as input, so its output is a refinement of PPMd.
+
+| Corpus | Input (bytes) | Output (bytes) | Ratio | Time | Speed |
+|--------|--------------|---------------|-------|------|-------|
+| input | 51,052 | 10,560 | 20.69% | 7.6s | 6,744 B/s |
+| input2 | 941,724 | 189,312 | 20.10% | 72.7s | 12,948 B/s |
+| enwik7 | 10,000,000 | 1,907,722 | 19.08% | 783.4s | 12,765 B/s |
+
+#### v1: PPMd+LSTM averaged *(quirk: double-counted PPMd — `0.5*ppmd_bit + 0.5*lstm_bit`)*
+
+| Corpus | Input (bytes) | Output (bytes) | Ratio | Time | Speed |
+|--------|--------------|---------------|-------|------|-------|
+| input | 51,052 | 7,654 | 14.99% | 7.2s | 7,081 B/s |
+| input2 | 941,724 | 185,029 | 19.65% | 70.8s | 13,299 B/s |
+| enwik7 | 10,000,000 | 1,936,942 | 19.37% | 786.5s | 12,715 B/s |
+
+#### v1 vs v2 comparison:
+
+| Corpus | v1 (averaged) | v2 (LSTM-only) | Delta | Winner |
+|--------|--------------|---------------|-------|--------|
+| input (51K) | **7,654** | 10,560 | +2,906 (+38%) | v1 |
+| input2 (942K) | **185,029** | 189,312 | +4,283 (+2.3%) | v1 |
+| enwik7 (10M) | 1,936,942 | **1,907,722** | -29,220 (-1.5%) | v2 |
+
+**Analysis — why averaging PPMd helps on small data but hurts on large:**
+
+1. **Small data (input, 51K):** The LSTM has seen very little data and its byte-level predictions are still rough. PPMd, being a statistical model with fast convergence, gives better *bit-level* predictions early on. Averaging injects PPMd's strong early-stage signal into the prediction — even though it's theoretically "double-counted", the LSTM's uncertain output benefits from the regularization.
+
+2. **Large data (enwik7, 10M):** The LSTM has converged and its byte-level predictions are highly refined. PPMd byte probs were already incorporated by the LSTM. Adding PPMd's raw bit prediction on top now dilutes the LSTM's superior signal. The 0.5 weight forces an equal contribution where the LSTM should dominate.
+
+3. **Crossover point:** Between input2 (942K, v1 wins by 2.3%) and enwik7 (10M, v2 wins by 1.5%), the LSTM becomes self-sufficient. The crossover is around ~2-5M bytes of training data.
+
+4. **Implication for the full predictor:** The `byte_mixer_override` in [predictor.cpp](src/predictor.cpp#L222) serves a similar purpose — when the LSTM is confident (output exactly 0 or 1), it bypasses the entire mixer/SSE chain. This is the correct approach: trust the LSTM when it's certain, let the mixer blend when uncertain. An adaptive weighting scheme (high PPMd weight early, decaying toward LSTM-only) could capture the best of both worlds.
+
+**Comparison with LSTM-only and full predictor (all english.dic compress):**
+
+| Corpus | LSTM-only | ByteMixer v2 | ByteMixer v1 | Full (461 models) |
+|--------|----------|-------------|-------------|-------------------|
+| input | 13,692 | 10,560 | **7,654** | 4,765 |
+| input2 | 207,575 | 189,312 | **185,029** | 158,273 |
+| enwik7 | 2,115,044 | **1,907,722** | 1,936,942 | — |
+
 ---
 
 ## Current Baselines
