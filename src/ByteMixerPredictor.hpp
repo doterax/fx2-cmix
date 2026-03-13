@@ -5,11 +5,45 @@
 #include "mixer/lstm.h"
 #include "models/ppmd.h"
 #include <Eigen/Core>
+#include <cmath>
 #include <memory>
 #include <vector>
 
-// Isolated PPMd + LSTM predictor (ByteMixer without the full 461-model ensemble).
-// Data flow: PPMd produces byte probs → LSTM refines them → bit-level decomposition.
+// Micro-mixer: online logistic regression over 2 stretched inputs.
+// Learns optimal PPMd vs LSTM blending from actual bit outcomes.
+class MicroMixer {
+public:
+  MicroMixer(float lr = 0.07f) : w_{0.0f, 0.0f}, lr_(lr) {}
+
+  static float Stretch(float p) {
+    p = std::max(0.0001f, std::min(0.9999f, p));
+    return std::log(p / (1.0f - p));
+  }
+  static float Squash(float x) { return 1.0f / (1.0f + std::exp(-x)); }
+
+  float Mix(float p0, float p1) {
+    s0_ = Stretch(p0);
+    s1_ = Stretch(p1);
+    return Squash(w_[0] * s0_ + w_[1] * s1_);
+  }
+
+  void Update(int bit) {
+    float p = Squash(w_[0] * s0_ + w_[1] * s1_);
+    float err = (static_cast<float>(bit) - p) * lr_;
+    w_[0] += err * s0_;
+    w_[1] += err * s1_;
+  }
+
+private:
+  float w_[2];
+  float s0_, s1_;
+  float lr_;
+};
+
+// Isolated PPMd + LSTM predictor with adaptive micro-mixer.
+// Data flow: PPMd produces byte probs → LSTM refines them → micro-mixer
+// blends PPMd bit prediction with LSTM bit prediction, learning optimal
+// weights online from actual bit outcomes.
 class ByteMixerPredictor : public IPredictor {
 public:
   ByteMixerPredictor(int ppmd_order = 25, int ppmd_mb = 1024,
@@ -19,7 +53,8 @@ public:
                      int bptt_depth = 0, int bptt_period = 1,
                      const std::vector<bool> &vocab = std::vector<bool>(256, true))
       : bit_context_(1), top_(255), mid_(0), bot_(0), vocab_(vocab),
-        probs_(Eigen::VectorXf::Constant(256, 1.0f / 256)) {
+        probs_(Eigen::VectorXf::Constant(256, 1.0f / 256)),
+        mixer_(0.07f), last_mix_p_(0.5f) {
 
     vocab_size_ = 0;
     for (int i = 0; i < 256; ++i) {
@@ -43,18 +78,25 @@ public:
   }
 
   float Predict() override {
-    // PPMd must still be called each bit to keep its internal state in sync
-    ppmd_->Predict();
+    // Get PPMd bit prediction
+    const Eigen::VectorXf &ppmd_bit = ppmd_->Predict();
+    float ppmd_p = ppmd_bit[0];
 
-    // LSTM byte probs already incorporate PPMd input — use them directly
+    // Get LSTM bit prediction from byte-level probs
     int   mid   = bot_ + ((top_ - bot_) / 2);
     float num   = probs_.segment(mid + 1, top_ - mid).sum();
     float denom = probs_.segment(bot_, mid + 1 - bot_).sum() + num;
-    if (denom == 0) return 0.5f;
-    return num / denom;
+    float lstm_p = (denom == 0) ? 0.5f : num / denom;
+
+    // Micro-mixer learns optimal blend online
+    last_mix_p_ = mixer_.Mix(ppmd_p, lstm_p);
+    return last_mix_p_;
   }
 
   void Perceive(int bit) override {
+    // Update micro-mixer weights from actual outcome
+    mixer_.Update(bit);
+
     ppmd_->Perceive(bit);
 
     mid_ = bot_ + ((top_ - bot_) / 2);
@@ -66,10 +108,8 @@ public:
       unsigned int completed_byte = bit_context_ - 256;
       bit_context_ = completed_byte;
 
-      // PPMd byte update
       ppmd_->ByteUpdate();
 
-      // Get PPMd byte-level probabilities and feed to LSTM
       const Eigen::VectorXf &ppmd_byte_probs = ppmd_->BytePredict();
       int off = 0;
       for (int i = 0; i < 256; ++i) {
@@ -103,6 +143,8 @@ private:
   unsigned int vocab_size_;
   std::unique_ptr<PPMD::PPMD> ppmd_;
   std::unique_ptr<Lstm> lstm_;
+  MicroMixer mixer_;
+  float last_mix_p_;
 };
 
 #endif
