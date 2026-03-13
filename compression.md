@@ -120,6 +120,60 @@ The byte class context helps most on enwik7 (-4,046 bytes absolute) because with
 
 **Diminishing returns from mixer contexts alone:** Going from 1→8→40 mixers improved input by only 216 bytes total (3.5%). The remaining 1,211-byte gap to the full predictor requires fundamentally different model signals (word boundaries, XML structure, match models, etc.), not more mixer contexts. To improve further, we need to enrich the model inputs rather than the mixer topology.
 
+### MixPredictor — Extensible multi-model predictor (`-p mix`)
+
+Adds new model inputs alongside PPMd+LSTM, blended by an N-input context-indexed micro-mixer. Designed for easy addition of further models.
+
+**Architecture:** N-input `NMicroMixer` (online logistic regression over N stretched inputs), 80 context-indexed instances (5 byte classes × 8 bit positions × 2 bracket states). Sub-models: PPMd bit prediction + LSTM bit prediction + Bracket model bit prediction. `BracketContext` provides an additional mixer context dimension (inside/outside bracket).
+
+**Sub-model roles:**
+- **PPMd** (order 25): Strong local n-gram predictor, fast convergence
+- **LSTM** (200 cells): Learns long-range statistical patterns, refines PPMd byte probs
+- **Bracket** model: Predicts closing bracket character (`>`, `)`, `}`, `]`) given opening bracket + distance statistics. After preprocessing, `<`→`L`, `>`→`N`, `{`→`P`, `}`→`R`, so the bracket pairs tracked are `L/N`, `P/R`, `(/)`, `[/]`.
+
+**Results (english.dic):**
+
+| Corpus | Input (bytes) | Output (bytes) | Ratio | Time | Speed |
+|--------|--------------|---------------|-------|------|-------|
+| input | 51,052 | **5,920** | 11.60% | 7.7s | 6,647 B/s |
+| input2 | 941,724 | **181,323** | 19.25% | 72.4s | 13,005 B/s |
+| enwik7 | 10,000,000 | **1,901,615** | 19.02% | 739.8s | 13,517 B/s |
+
+#### Comparison: ByteMixer v5 vs MixPredictor vs Full
+
+| Corpus | ByteMixer v5 (PPMd+LSTM) | MixPredictor (PPMd+LSTM+Bracket) | Improvement | Full predictor |
+|--------|-------------------------|----------------------------------|-------------|----------------|
+| input (51K) | 5,976 | **5,920** | -56 (-0.9%) | 4,765 |
+| input2 (942K) | 181,669 | **181,323** | -346 (-0.2%) | 158,273 |
+| enwik7 (10M) | 1,902,208 | **1,901,615** | -593 (-0.03%) | — |
+
+**Analysis:**
+- Bracket model + BracketContext together save 56 bytes on input, 346 on input2, 593 on enwik7.
+- The Bracket model provides a 3rd prediction signal (probability of closing bracket at given distance). BracketContext adds a mixer context dimension (inside/outside brackets), allowing the mixer to learn different PPMd/LSTM/Bracket blending weights depending on structural position.
+- Gains are modest because the Bracket model only predicts the **closing bracket character itself** — it does not predict the tag name content between brackets. PPMd order 25 already captures most closing tag patterns when context fits within 25 bytes.
+- Gap to full predictor on input: **1,155 bytes** (was 1,211 with ByteMixer v5). The remaining gap comes from Match models, Indirect/Nonstationary state machines, Direct context models, FXCM, and SSE calibration — none of which are in MixPredictor yet.
+
+#### Future idea: Closing tag content prediction
+
+Currently the Bracket model only predicts that the **closing bracket character** will appear at some distance — e.g., after `<title>Hello</`, it knows `>` will come but does NOT predict the tag name `title`. The tag name is handled by PPMd (order 25, which can match contexts up to 25 bytes) and LSTM (statistical patterns).
+
+A specialized **tag-content predictor** could:
+- When an opening bracket `L` (= `<`) is seen, record the tag name until `N` (= `>`)
+- When `L/` is seen (opening of a closing tag), predict the exact tag name from the bracket stack
+- This would give near-perfect predictions for XML/HTML closing tags
+
+**Pros:**
+- Very high prediction accuracy for closing tag names — almost deterministic given the bracket stack
+- Significant on enwik data which is heavily XML-structured (`<title>`, `<text>`, `<id>`, etc.)
+- Cheap to implement — just a stack of tag name strings + lookup
+- Complement to Match model — works even when the closing tag hasn't appeared in recent history
+
+**Cons:**
+- Only helps for XML/HTML tag content, not general text — narrow applicability
+- After dictionary preprocessing, common tags may already be replaced by single tokens (e.g., `<title>` → dictionary word), reducing the signal
+- PPMd order 25 already captures most closing tags when context is short enough (tag name + content < 25 bytes)
+- Would need to handle self-closing tags, malformed XML, and nesting edge cases
+
 ---
 
 ## Current Baselines

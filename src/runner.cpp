@@ -28,8 +28,9 @@
 #include "PPMDPredictor.hpp"
 #include "LstmPredictor.hpp"
 #include "ByteMixerPredictor.hpp"
+#include "MixPredictor.hpp"
 
-enum class EPredictorType { FULL, PPMD_ONLY, GENERIC, LSTM_ONLY, BYTE_MIXER };
+enum class EPredictorType { FULL, PPMD_ONLY, GENERIC, LSTM_ONLY, BYTE_MIXER, MIX };
 
 namespace {
 const int kMinVocabFileSize = 10000;
@@ -178,6 +179,12 @@ std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
                                                 128, 0.03f, 10.0f,
                                                 lstm_bptt_depth, lstm_bptt_period,
                                                 vocab);
+  } else if (type == EPredictorType::MIX) {
+    return std::make_unique<MixPredictor>(ppmd_order, ppmd_mb,
+                                         lstm_cells, lstm_layers,
+                                         128, 0.03f, 10.0f,
+                                         lstm_bptt_depth, lstm_bptt_period,
+                                         vocab);
   }
   throw std::invalid_argument("Unknown predictor type");
 }
@@ -482,8 +489,8 @@ int main(int argc, char **argv) {
 
   std::string predictor_name = "full";
   app.add_option("--predictor,-p", predictor_name,
-                 "Predictor type: 'full' (default), 'ppmd', 'generic', 'lstm', or 'bytemixer'")
-      ->check(CLI::IsMember({"full", "ppmd", "generic", "lstm", "bytemixer"}));
+                 "Predictor type: 'full' (default), 'ppmd', 'generic', 'lstm', 'bytemixer', or 'mix'")
+      ->check(CLI::IsMember({"full", "ppmd", "generic", "lstm", "bytemixer", "mix"}));
 
     // Experimental: mixer weighting controls (apply to 'generic')
     bool  mw_enable = false;
@@ -634,6 +641,9 @@ int main(int argc, char **argv) {
   } else if (predictor_name == "bytemixer") {
     predictor_type = EPredictorType::BYTE_MIXER;
     printf("Using predictor: ByteMixer (PPMd + LSTM, %d cells, %d layers)\n", lstm_cells, lstm_layers);
+  } else if (predictor_name == "mix") {
+    predictor_type = EPredictorType::MIX;
+    printf("Using predictor: Mix (PPMd + LSTM + Bracket, %d cells, %d layers)\n", lstm_cells, lstm_layers);
   } else {
     predictor_type = EPredictorType::FULL;
     printf("Using predictor: Full (all models)\n");
