@@ -34,6 +34,16 @@ Total benchmark time: 48.2 minutes.
 
 ### ByteMixer Baselines — PPMd + LSTM (200 cells, 1 layer, english.dic)
 
+#### v5: 40 context-indexed micro-mixers (previous byte class × bit position)
+
+5 byte classes (lowercase, uppercase, digit, space/whitespace, other) × 8 bit positions = 40 independent `MicroMixer` instances (LR=0.07). After each completed byte, `ByteClass()` classifies it and all subsequent bit predictions use `class*8 + bit_pos` to select the mixer. This captures that e.g. bit 7 after a lowercase letter has a very different PPMd/LSTM accuracy profile than bit 7 after a digit.
+
+| Corpus | Input (bytes) | Output (bytes) | Ratio | Time | Speed |
+|--------|--------------|---------------|-------|------|-------|
+| input | 51,052 | **5,976** | 11.71% | 7.3s | 7,022 B/s |
+| input2 | 941,724 | **181,669** | 19.29% | 72.4s | 13,013 B/s |
+| enwik7 | 10,000,000 | **1,902,208** | 19.02% | 741.4s | 13,487 B/s |
+
 #### v4: 8 bit-position-indexed micro-mixers
 
 Each bit position (0–7) within the byte gets its own independent `MicroMixer` (LR=0.07). MSB bits (character class decisions) and LSB bits (fine discrimination) have very different PPMd vs LSTM accuracy profiles, so separate mixers can specialize. Selection via `bit_context_` (1→2→4→…→128) maps to index 0–7.
@@ -74,32 +84,41 @@ A 2-input online logistic regression (`MicroMixer`, LR=0.07) takes stretched PPM
 
 #### All versions compared:
 
-| Corpus | v1 (50/50) | v2 (LSTM-only) | v3 (micro-mixer) | v4 (8 pos-mixers) | Full predictor |
-|--------|-----------|---------------|-----------------|-------------------|----------------|
-| input (51K) | 7,654 | 10,560 | 6,192 | **5,995** | 4,765 |
-| input2 (942K) | 185,029 | 189,312 | 183,207 | **182,075** | 158,273 |
-| enwik7 (10M) | 1,936,942 | 1,907,722 | 1,913,981 | **1,906,254** | — |
+| Corpus | v1 (50/50) | v2 (LSTM-only) | v3 (1 mixer) | v4 (8 pos) | v5 (40 ctx) | Full predictor |
+|--------|-----------|---------------|-------------|-----------|------------|----------------|
+| input (51K) | 7,654 | 10,560 | 6,192 | 5,995 | **5,976** | 4,765 |
+| input2 (942K) | 185,029 | 189,312 | 183,207 | 182,075 | **181,669** | 158,273 |
+| enwik7 (10M) | 1,936,942 | 1,907,722 | 1,913,981 | 1,906,254 | **1,902,208** | — |
 
 #### Analysis:
 
-**v4 (bit-position mixers) wins across all corpora:**
-- On input (51K): **5,995** — 3.2% better than v3 (6,192), 21.7% better than v1. Only 25.8% worse than full predictor (4,765). A 2-input mixer with 8 contexts closes to within **1,230 bytes** of 461 models.
-- On input2 (942K): **182,075** — 0.6% better than v3 (183,207). The per-bit specialization helps less on larger data where the mixer has already learned good global weights.
-- On enwik7 (10M): **1,906,254** — best of all ByteMixer variants, beating even v2's pure LSTM (1,907,722) by 1,468 bytes. This is significant: v3's single mixer *lost* to v2 on enwik7 by 6,259 bytes due to mixer overhead, but v4's position-specific mixers eliminate that overhead penalty.
+**v5 (40 context mixers) is the new best across all corpora:**
+- On input (51K): **5,976** — 0.3% better than v4 (5,995), 3.5% better than v3, 43.4% better than v2. Only 25.4% worse than full predictor (4,765), closing to within **1,211 bytes** of 461 models.
+- On input2 (942K): **181,669** — 0.2% better than v4 (182,075). Steady improvement from context specialization.
+- On enwik7 (10M): **1,902,208** — 0.2% better than v4 (1,906,254), and 0.3% better than v2's pure LSTM (1,907,722). The 40-mixer approach decisively beats all previous variants at all scales.
 
-**Why bit-position indexing works:**
-- MSB bits (positions 6-7) determine character class (letter vs digit vs punctuation). PPMd's high-order context excels here — these bits are highly predictable from surrounding characters.
-- LSB bits (positions 0-2) distinguish between similar characters (e.g., 'a' vs 'c'). The LSTM's learned embeddings capture these distributional patterns better.
-- By separating mixers per position, each can learn the right PPMd/LSTM blend for its specific role. A single mixer must compromise.
+**Progression from v3 → v4 → v5 shows diminishing but consistent returns:**
 
-**The crossover problem is solved:**
-- v3 lost to v2 on large data (mixer overhead), but won on small data (adaptive blending). v4 beats all versions at all scales — the bit-position granularity is enough context to eliminate the mixer overhead while keeping the adaptive benefit.
+| Step | input Δ | input2 Δ | enwik7 Δ | What changed |
+|------|---------|----------|----------|--------------|
+| v3→v4 | -197 (-3.2%) | -1,132 (-0.6%) | -7,727 (-0.4%) | 1→8 mixers (bit position) |
+| v4→v5 | -19 (-0.3%) | -406 (-0.2%) | -4,046 (-0.2%) | 8→40 mixers (+byte class) |
+| v3→v5 total | -216 (-3.5%) | -1,538 (-0.8%) | -11,773 (-0.6%) | 1→40 mixers |
+
+The byte class context helps most on enwik7 (-4,046 bytes absolute) because with 10M of training data the 40 mixers have enough samples to specialize. On input (51K), only 19 bytes saved — with ~6,400 bytes of training data split among 40 mixers, each sees only ~160 bytes, barely enough to learn.
+
+**Why byte class helps:**
+- After a lowercase letter, the next byte is very likely another lowercase letter or space. PPMd's character-level n-gram model is strong here, so the mixer should weight PPMd higher for certain bit positions.
+- After a digit, the next byte has a different distribution (more digits, decimal points, commas). The specialized mixer can learn this different PPMd/LSTM balance.
+- After special characters (tags, punctuation), the LSTM's longer-range context tends to be more valuable than PPMd's local n-gram.
 
 **Gap to full predictor:**
-- input: 5,995 vs 4,765 — remaining **1,230 bytes** (20.5% of full predictor output) come from the 459 other models + 23 context-specific mixers + SSE.
-- input2: 182,075 vs 158,273 — **23,802 bytes** (15.0%) gap, slightly narrower than v3's 13.6%.
+- input: 5,976 vs 4,765 — remaining **1,211 bytes** (20.3%) come from the 459 other models + 23 context-specific mixers + SSE.
+- input2: 181,669 vs 158,273 — **23,396 bytes** (14.8%) gap.
 
-**Implication:** Bit-position indexing is a cheap win (8 mixer instances, no additional model cost). Further contextual enrichment (e.g., previous byte class × bit position = 40 mixers) could push closer to the full predictor, especially on small data.
+**Speed:** v5 runs at the same speed as v4 (7s for input, ~72s for input2, ~740s for enwik7). The 40 tiny mixers (2 weights each = 80 floats) add negligible overhead. In fact enwik7 was slightly *faster* (741s vs 800s) — likely measurement noise.
+
+**Diminishing returns from mixer contexts alone:** Going from 1→8→40 mixers improved input by only 216 bytes total (3.5%). The remaining 1,211-byte gap to the full predictor requires fundamentally different model signals (word boundaries, XML structure, match models, etc.), not more mixer contexts. To improve further, we need to enrich the model inputs rather than the mixer topology.
 
 ---
 

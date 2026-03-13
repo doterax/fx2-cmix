@@ -40,10 +40,25 @@ private:
   float lr_;
 };
 
+// Classify a byte into one of 5 classes for mixer context.
+// 0=lowercase, 1=uppercase, 2=digit, 3=space/newline, 4=other
+inline int ByteClass(unsigned int c) {
+  if (c >= 'a' && c <= 'z') return 0;
+  if (c >= 'A' && c <= 'Z') return 1;
+  if (c >= '0' && c <= '9') return 2;
+  if (c == ' ' || c == '\n' || c == '\r' || c == '\t') return 3;
+  return 4;
+}
+
+static constexpr int kNumByteClasses = 5;
+static constexpr int kNumBitPositions = 8;
+static constexpr int kNumMixers = kNumByteClasses * kNumBitPositions; // 40
+
 // Isolated PPMd + LSTM predictor with adaptive micro-mixer.
 // Data flow: PPMd produces byte probs → LSTM refines them → micro-mixer
 // blends PPMd bit prediction with LSTM bit prediction, learning optimal
 // weights online from actual bit outcomes.
+// v5: 40 mixers indexed by (previous byte class × bit position).
 class ByteMixerPredictor : public IPredictor {
 public:
   ByteMixerPredictor(int ppmd_order = 25, int ppmd_mb = 1024,
@@ -52,12 +67,13 @@ public:
                      float gradient_clip = 10.0f,
                      int bptt_depth = 0, int bptt_period = 1,
                      const std::vector<bool> &vocab = std::vector<bool>(256, true))
-      : bit_context_(1), top_(255), mid_(0), bot_(0), vocab_(vocab),
+      : bit_context_(1), top_(255), mid_(0), bot_(0), prev_byte_class_(4),
+        vocab_(vocab),
         probs_(Eigen::VectorXf::Constant(256, 1.0f / 256)),
         last_mix_p_(0.5f) {
 
-    // 8 micro-mixers, one per bit position in byte
-    for (int i = 0; i < 8; ++i) {
+    // 40 micro-mixers: 5 byte classes × 8 bit positions
+    for (int i = 0; i < kNumMixers; ++i) {
       mixers_[i] = MicroMixer(0.07f);
     }
 
@@ -93,21 +109,23 @@ public:
     float denom = probs_.segment(bot_, mid + 1 - bot_).sum() + num;
     float lstm_p = (denom == 0) ? 0.5f : num / denom;
 
-    // Select micro-mixer by bit position (bit_context_ encodes position: 1,2,4,...,128)
+    // Select micro-mixer by (prev byte class × bit position)
     int bit_pos = 0;
     unsigned int bc = bit_context_ >> 1;
     while (bc > 0) { ++bit_pos; bc >>= 1; }
+    int mixer_idx = prev_byte_class_ * kNumBitPositions + bit_pos;
 
-    last_mix_p_ = mixers_[bit_pos].Mix(ppmd_p, lstm_p);
+    last_mix_p_ = mixers_[mixer_idx].Mix(ppmd_p, lstm_p);
     return last_mix_p_;
   }
 
   void Perceive(int bit) override {
-    // Update the bit-position mixer that made the last prediction
+    // Update the (prev byte class × bit position) mixer that made the last prediction
     int bit_pos = 0;
     unsigned int bc = bit_context_ >> 1;
     while (bc > 0) { ++bit_pos; bc >>= 1; }
-    mixers_[bit_pos].Update(bit);
+    int mixer_idx = prev_byte_class_ * kNumBitPositions + bit_pos;
+    mixers_[mixer_idx].Update(bit);
 
     ppmd_->Perceive(bit);
 
@@ -140,6 +158,7 @@ public:
         else           { probs_[i] = 0; }
       }
 
+      prev_byte_class_ = ByteClass(completed_byte);
       top_ = 255; bot_ = 0; bit_context_ = 1;
     }
   }
@@ -149,13 +168,14 @@ public:
 private:
   unsigned int bit_context_;
   int top_, mid_, bot_;
+  int prev_byte_class_;
   std::vector<bool> vocab_;
   Eigen::VectorXf probs_, lstm_input_;
   Eigen::VectorXi byte_map_;
   unsigned int vocab_size_;
   std::unique_ptr<PPMD::PPMD> ppmd_;
   std::unique_ptr<Lstm> lstm_;
-  MicroMixer mixers_[8];
+  MicroMixer mixers_[kNumMixers];
   float last_mix_p_;
 };
 
