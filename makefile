@@ -74,6 +74,9 @@ prof_gen: CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -fprofile-generate=$(ROOT_DIR)/pg
 prof_gen: LFLAGS                            += -fprofile-generate=$(ROOT_DIR)/pgo_data
 prof_gen: clean cmix
 
+prof_merge:
+	llvm-profdata merge -output $(ROOT_DIR)/pgo_data/default.profdata $(ROOT_DIR)/pgo_data/*.profraw
+
 prof_use: CPPFLAGS_PART-THAT-CAN-BE-SLOW    += -fprofile-use=$(ROOT_DIR)/pgo_data 
 prof_use: CPPFLAGS_PART-THAT-SHOULD-BE-FAST += -fprofile-use=$(ROOT_DIR)/pgo_data 
 prof_use: LFLAGS                            += -fprofile-use=$(ROOT_DIR)/pgo_data 

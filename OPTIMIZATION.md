@@ -23,6 +23,29 @@ and demonstrate no meaningful compression degradation. Net speedup: **~9-10%**.
 **Configuration:** 461 total model outputs, LSTM 200 cells, horizon 128, PPMd order 25 / 1024 MB, 23 layer-0 mixers + 1 layer-1 mixer + SSE.  
 **Date:** 2026-03-13
 
+## After P1 (No-Risk) Optimizations
+
+Implemented: **P1-4** (fuse layer normalization), **P1-5a** (PPMd cache lim), **P1-5b** (PPMd hardware prefetch), **P1-12a** (PGO build).  
+**P1-3** and **P1-6a** were already completed as part of P0 work.
+
+| Test | Input Size | Output Size | Time | Rate | Compression Ratio | Delta vs Baseline |
+|------|-----------|-------------|------|------|-------------------|--------------------|
+| `input` (fast) | 51,052 B | 6,149 B | 17.3 s | 2,951 B/s | 12.04% | **−3 B, 1.16× faster** |
+| `input2` (longer) | 941,724 B | 181,039 B | 243.8 s | 3,863 B/s | 19.22% | **+20 B, 1.05× faster** |
+
+**Notes:** Compression output identical to P0 (no new numerical changes). PGO provides a small
+additional speedup on `input` (~3% vs P0). The `input2` time shows run-to-run variance
+(±4% is normal on a ~4min test). PGO was trained on `input` — richer training data
+(e.g., enwik8) may yield better results on larger files.
+
+**PGO build steps:**
+1. `make prof_gen` — build instrumented binary
+2. `./cmix.exe no-preprocess prof_input/input res.bin` — generate profile
+3. `llvm-profdata merge -output pgo_data/default.profdata pgo_data/*.profraw` — merge profiles
+4. `make prof_use` — rebuild with profile data
+
+**Date:** 2026-03-13
+
 ---
 
 ## Architecture Overview
@@ -613,13 +636,13 @@ profiles for an additional 5-10% speedup.
 | 7a | Mark model classes final | 1.02-1.05× | None | Trivial | **P0** | ✅ Done |
 | 8c | Eliminate Ones() in gate computation | 1.02-1.05× | None | Trivial | **P0** | ✅ Done |
 | 10a | Reduce indirect hash to proper widths | 1.05-1.1× | None | Low | **P0** | ✅ Done |
-| 3 | LSTM softmax as matrix-vector multiply | 1.1-1.3× | Near-zero | Medium | **P1** | — |
-| 4 | Fuse layer normalization | 1.05-1.1× | None | Low | **P1** | — |
-| 5a | PPMd Indx2Ptr fast-path inline | 1.05-1.1× | None | Low | **P1** | — |
-| 5b | PPMd context tree prefetching | 1.05-1.1× | None | Low | **P1** | — |
-| 6a | Mixer context cache | 1.05× | None | Low | **P1** | — |
+| 3 | LSTM softmax as matrix-vector multiply | 1.1-1.3× | Near-zero | Medium | **P1** | ✅ Done (via P0-1c) |
+| 4 | Fuse layer normalization | 1.05-1.1× | None | Low | **P1** | ✅ Done |
+| 5a | PPMd Indx2Ptr fast-path inline | 1.05-1.1× | None | Low | **P1** | ✅ Done |
+| 5b | PPMd context tree prefetching | 1.05-1.1× | None | Low | **P1** | ✅ Done |
+| 6a | Mixer context cache | 1.05× | None | Low | **P1** | ✅ Done (via P0-6b) |
 | 7b | Reduce sigmoid table size | 1.02-1.05× | Minimal | Low | **P1** | — |
-| 12a | PGO build | 1.05-1.15× | None | Low | **P1** | — |
+| 12a | PGO build | 1.05-1.15× | None | Low | **P1** | ✅ Done |
 | 1a | LSTM truncated BPTT | 1.3-2× | Low-Med | Medium | **P2** | — |
 | 1b | Reduce BPTT frequency | 1.5-2× | Low | Medium | **P2** | — |
 | 5c | PPMd memset optimization | 1.02× | None | Low | **P2** | — |

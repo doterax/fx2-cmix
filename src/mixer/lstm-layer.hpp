@@ -140,11 +140,11 @@ inline void LstmLayer::ForwardPass(NeuronLayer& neurons,
   int input_size = input.size();
   neurons.norm_[epoch_].noalias() += neurons.weights_.middleCols(output_size_, input_size) * input;
   
-  // Layer normalization with vectorized operations
-  float variance = neurons.norm_[epoch_].squaredNorm() / num_cells_;
-  neurons.ivar_[epoch_] = 1.0f / sqrt(variance + 1e-5f);
-  neurons.norm_[epoch_] *= neurons.ivar_[epoch_];
-  neurons.state_[epoch_].noalias() = neurons.norm_[epoch_].cwiseProduct(neurons.gamma_) + neurons.beta_;
+  // Layer normalization: fused normalize + affine transform
+  float inv_std = 1.0f / sqrtf(neurons.norm_[epoch_].squaredNorm() / num_cells_ + 1e-5f);
+  neurons.ivar_[epoch_] = inv_std;
+  neurons.norm_[epoch_] *= inv_std;
+  neurons.state_[epoch_] = (neurons.norm_[epoch_].array() * neurons.gamma_.array() + neurons.beta_.array()).matrix();
 }
 
 inline void LstmLayer::ClipGradients(Eigen::VectorXf* arr) {

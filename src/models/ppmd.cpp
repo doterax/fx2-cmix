@@ -228,9 +228,8 @@ struct ppmd_Model {
     }
 
     qword addr = ((byte *)p) - HeapStart;
-    // Use fixed baseline so index encoding does not depend on current
-    // UnitsStart
-    uint lim  = (uint)(UnitsStartBase - HeapStart);
+    // Use cached lim for fast index encoding
+    uint lim  = lim_cached_;
     uint indx = (addr >= lim) ? (addr - lim) / UNIT_SIZE + lim : addr;
 
     // Validate resulting index would convert back to a valid pointer
@@ -263,8 +262,8 @@ struct ppmd_Model {
       return nullptr;
     }
 
-    // Use fixed baseline so decoding is invariant to UnitsStart shifts
-    uint  lim  = (uint)(UnitsStartBase - HeapStart);
+    // Use cached lim for fast conversion
+    uint  lim  = lim_cached_;
     qword addr = (indx >= lim) ? qword(indx - lim) * UNIT_SIZE + lim : indx;
 
     // Validate that computed address is within heap bounds
@@ -294,8 +293,8 @@ struct ppmd_Model {
   inline void assert_index_valid(uint indx, const char *where) {
     if (indx == 0)
       return;
-    // Validate using fixed baseline for stability across UnitsStart shifts
-    uint  lim  = (uint)(UnitsStartBase - HeapStart);
+    // Validate using cached lim for stability across UnitsStart shifts
+    uint  lim  = lim_cached_;
     qword addr = (indx >= lim) ? qword(indx - lim) * UNIT_SIZE + lim : indx;
     if (addr >= SubAllocatorSize) {
       printf("\n*** assert_index_valid FAILED at %s ***\n", where);
@@ -340,7 +339,7 @@ struct ppmd_Model {
     // FIX: Sanitize corrupted NextIndx from legacy blocks before conversion
     uint indx = This->NextIndx;
     if (indx != 0) {
-      uint  lim  = (uint)(UnitsStartBase - HeapStart);
+      uint  lim  = lim_cached_;
       qword addr = (indx >= lim) ? qword(indx - lim) * UNIT_SIZE + lim : indx;
       if (addr >= SubAllocatorSize) {
         // Corrupted - would result in out-of-bounds address
@@ -409,7 +408,7 @@ struct ppmd_Model {
     //  Indx2Ptr
     uint nextIndx = next->NextIndx;
     if (nextIndx != 0) {
-      uint  lim  = (uint)(UnitsStartBase - HeapStart);
+      uint  lim  = lim_cached_;
       qword addr = (nextIndx >= lim) ? qword(nextIndx - lim) * UNIT_SIZE + lim
                                      : nextIndx;
       if (addr >= SubAllocatorSize) {
@@ -472,6 +471,7 @@ struct ppmd_Model {
   byte *LoUnit;
   byte *HiUnit;
   byte *AuxUnit;
+  uint  lim_cached_;  // Pre-computed (UnitsStartBase - HeapStart) for fast index conversion
 
   uint  U2B(uint NU) { return 8 * NU + 4 * NU; } // Units to Bytes: NU * 12
 
@@ -507,6 +507,7 @@ struct ppmd_Model {
     // Capture the initial UnitsStart as a fixed baseline for pointer/index
     // conversions so indices remain stable even if UnitsStart moves.
     UnitsStartBase = UnitsStart;
+    lim_cached_ = (uint)(UnitsStartBase - HeapStart);
     GlueCount = GlueCount1 = 0;
   }
 
@@ -962,7 +963,15 @@ struct ppmd_Model {
     t2    = tmp;
   }
 
-  void PrefetchData(void *Addr) { *(volatile byte *)Addr; }
+  void PrefetchData(void *Addr) { __builtin_prefetch(Addr, 0, 3); }
+
+  // Lightweight prefetch of memory pointed to by a PPMd index
+  void PrefetchIndx(uint indx) {
+    if (indx == 0) return;
+    uint  lim  = lim_cached_;
+    qword addr = (indx >= lim) ? qword(indx - lim) * UNIT_SIZE + lim : indx;
+    __builtin_prefetch(HeapStart + addr, 0, 1);
+  }
 
   enum { UP_FREQ = 5 };
 
@@ -2207,6 +2216,8 @@ struct ppmd_Model {
           goto Break; // Reached root context
         OrderFall++;
         MinContext = suff(MinContext); // Move to parent (shorter) context
+        // Prefetch next suffix so it's in cache for the next iteration
+        if (MinContext->iSuffix) PrefetchIndx(MinContext->iSuffix);
       } while (MinContext->NumStats == NumMasked);
       processSymbol2_T(MinContext[0]); // Add escape predictions
     }
