@@ -26,8 +26,9 @@
 #include "CLI/CLI11.hpp"
 
 #include "PPMDPredictor.hpp"
+#include "LstmPredictor.hpp"
 
-enum class EPredictorType { FULL, PPMD_ONLY, GENERIC };
+enum class EPredictorType { FULL, PPMD_ONLY, GENERIC, LSTM_ONLY };
 
 namespace {
 const int kMinVocabFileSize = 10000;
@@ -154,7 +155,9 @@ std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
                                             float mw_min,
                                             float mw_max,
                                             int lstm_bptt_depth,
-                                            int lstm_bptt_period) {
+                                            int lstm_bptt_period,
+                                            int lstm_cells,
+                                            int lstm_layers) {
   if (type == EPredictorType::FULL) {
     return CreateFullPredictor(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth, lstm_bptt_period);
   } else if (type == EPredictorType::PPMD_ONLY) {
@@ -163,6 +166,11 @@ std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
     return CreateGenericPredictor(vocab, ppmd_order, ppmd_mb,
                                   mw_enable, mw_alpha, mw_min, mw_max,
                                   lstm_bptt_depth, lstm_bptt_period);
+  } else if (type == EPredictorType::LSTM_ONLY) {
+    return std::make_unique<LstmPredictor>(lstm_cells, lstm_layers,
+                                           128, 0.03f, 10.0f,
+                                           lstm_bptt_depth, lstm_bptt_period,
+                                           vocab);
   }
   throw std::invalid_argument("Unknown predictor type");
 }
@@ -310,7 +318,9 @@ bool RunCompression(EPredictorType predictor_type, bool enable_preprocess,
                     double mw_min,
                     double mw_max,
                     int lstm_bptt_depth,
-                    int lstm_bptt_period) {
+                    int lstm_bptt_period,
+                    int lstm_cells,
+                    int lstm_layers) {
   FILE *data_in = nullptr;
   if (fopen_s(&data_in, input_path.c_str(), "rb") != 0 || !data_in)
     return false;
@@ -356,7 +366,8 @@ bool RunCompression(EPredictorType predictor_type, bool enable_preprocess,
   WriteHeader(temp_bytes, vocab, dictionary != NULL, &data_out);
   auto p = CreatePredictor(vocab, predictor_type, ppmd_order, ppmd_mb,
                            mw_enable, (float)mw_alpha, (float)mw_min, (float)mw_max,
-                           lstm_bptt_depth, lstm_bptt_period);
+                           lstm_bptt_depth, lstm_bptt_period,
+                           lstm_cells, lstm_layers);
   if (enable_preprocess)
     preprocessor::Pretrain(p.get(), dictionary);
   Compress(temp_bytes, &temp_in, &data_out, output_bytes, p.get());
@@ -378,7 +389,9 @@ bool RunDecompression(EPredictorType     predictor_type,
                       double mw_min,
                       double mw_max,
                       int lstm_bptt_depth,
-                      int lstm_bptt_period) {
+                      int lstm_bptt_period,
+                      int lstm_cells,
+                      int lstm_layers) {
   std::ifstream data_in(input_path, std::ios::in | std::ios::binary);
   if (!data_in.is_open())
     return false;
@@ -414,7 +427,8 @@ bool RunDecompression(EPredictorType     predictor_type,
   }
   auto p = CreatePredictor(vocab, predictor_type, ppmd_order, ppmd_mb,
                            mw_enable, (float)mw_alpha, (float)mw_min, (float)mw_max,
-                           lstm_bptt_depth, lstm_bptt_period);
+                           lstm_bptt_depth, lstm_bptt_period,
+                           lstm_cells, lstm_layers);
   if (dictionary_used)
     preprocessor::Pretrain(p.get(), dictionary);
 
@@ -461,8 +475,8 @@ int main(int argc, char **argv) {
 
   std::string predictor_name = "full";
   app.add_option("--predictor,-p", predictor_name,
-                 "Predictor type: 'full' (default), 'ppmd', or 'generic'")
-      ->check(CLI::IsMember({"full", "ppmd", "generic"}));
+                 "Predictor type: 'full' (default), 'ppmd', 'generic', or 'lstm'")
+      ->check(CLI::IsMember({"full", "ppmd", "generic", "lstm"}));
 
     // Experimental: mixer weighting controls (apply to 'generic')
     bool  mw_enable = false;
@@ -487,6 +501,16 @@ int main(int argc, char **argv) {
   app.add_option("--lstm-bptt-period", lstm_bptt_period,
                  "LSTM BPTT period (1 = every cycle, N = every Nth, default: 1)")
       ->check(CLI::Range(1, 128));
+
+  int lstm_cells = 200;
+  app.add_option("--lstm-cells", lstm_cells,
+                 "LSTM hidden cells (default: 200)")
+      ->check(CLI::Range(16, 1024));
+
+  int lstm_layers = 1;
+  app.add_option("--lstm-layers", lstm_layers,
+                 "LSTM layers (default: 1)")
+      ->check(CLI::Range(1, 4));
 
   // Subcommands
   std::string input_path;
@@ -597,6 +621,9 @@ int main(int argc, char **argv) {
   } else if (predictor_name == "generic") {
     predictor_type = EPredictorType::GENERIC;
     printf("Using predictor: Generic full predictor (explicit init)\n");
+  } else if (predictor_name == "lstm") {
+    predictor_type = EPredictorType::LSTM_ONLY;
+    printf("Using predictor: LSTM only (%d cells, %d layers)\n", lstm_cells, lstm_layers);
   } else {
     predictor_type = EPredictorType::FULL;
     printf("Using predictor: Full (all models)\n");
@@ -645,7 +672,8 @@ int main(int argc, char **argv) {
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
                 dictionary, &input_bytes, &output_bytes, ppmd_order,
                 ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-                lstm_bptt_depth, lstm_bptt_period)) {
+                lstm_bptt_depth, lstm_bptt_period,
+                lstm_cells, lstm_layers)) {
       fprintf(stderr, "Error: Enwik9 decompression failed\n");
       return 1;
     }
@@ -681,7 +709,8 @@ int main(int argc, char **argv) {
     if (!RunCompression(predictor_type, enable_preprocess, input_path,
               temp_path, output_path, dictionary, &input_bytes,
               &output_bytes, ppmd_order, ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-              lstm_bptt_depth, lstm_bptt_period)) {
+              lstm_bptt_depth, lstm_bptt_period,
+              lstm_cells, lstm_layers)) {
       fprintf(stderr, "Error: Compression failed\n");
       return 1;
     }
@@ -719,7 +748,8 @@ int main(int argc, char **argv) {
     if (!RunCompression(predictor_type, enable_preprocess, input_path,
               temp_path, output_path, dictionary, &input_bytes,
               &output_bytes, ppmd_order, ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-              lstm_bptt_depth, lstm_bptt_period)) {
+              lstm_bptt_depth, lstm_bptt_period,
+              lstm_cells, lstm_layers)) {
       fprintf(stderr, "Error: Enwik9 compression failed\n");
       return 1;
     }
@@ -759,7 +789,8 @@ int main(int argc, char **argv) {
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
                 dictionary, &input_bytes, &output_bytes, ppmd_order,
                 ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-                lstm_bptt_depth, lstm_bptt_period)) {
+                lstm_bptt_depth, lstm_bptt_period,
+                lstm_cells, lstm_layers)) {
       fprintf(stderr, "Error: Extract operation failed\n");
       return 1;
     }
@@ -771,7 +802,8 @@ int main(int argc, char **argv) {
     if (!RunDecompression(predictor_type, input_path, temp_path, output_path,
                 dictionary, &input_bytes, &output_bytes, ppmd_order,
                 ppmd_mb, mw_enable, mw_alpha, mw_min, mw_max,
-                lstm_bptt_depth, lstm_bptt_period)) {
+                lstm_bptt_depth, lstm_bptt_period,
+                lstm_cells, lstm_layers)) {
       fprintf(stderr, "Error: Decompression failed\n");
       return 1;
     }
