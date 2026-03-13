@@ -46,7 +46,30 @@ additional speedup on `input` (~3% vs P0). The `input2` time shows run-to-run va
 
 **Date:** 2026-03-13
 
----
+## P2-1a: Truncated BPTT (opt-in via CLI)
+
+Truncated BPTT limits backpropagation to the last K timesteps instead of all 128.
+**Not enabled by default** — compression is unaffected unless the user explicitly opts in.
+Activate with `--lstm-bptt-depth N` (0 = full horizon, which is the default).
+
+**Tradeoff sweep (no PGO, compared to P1 non-PGO baseline):**
+
+| bptt_depth | input output | Δ | input time | speedup | input2 output | Δ | input2 time | speedup |
+|------------|-------------|---|------------|---------|---------------|---|-------------|---------|
+| 128 (full) | 6,149 B | — | 17.9 s | 1.00× | 181,039 B | — | 242.6 s | 1.00× |
+| 96 | 6,153 B | +4 | 15.0 s | 1.19× | 181,216 B | +177 (+0.10%) | 209.3 s | 1.16× |
+| **64** | **6,156 B** | **+7** | **14.3 s** | **1.25×** | **181,525 B** | **+486 (+0.27%)** | **196.0 s** | **1.24×** |
+| 32 | 6,159 B | +10 | 14.0 s | 1.28× | 182,018 B | +979 (+0.55%) | 184.3 s | 1.32× |
+
+**Recommended value: `--lstm-bptt-depth 64`** — best speed/compression tradeoff at 1.24× faster with only 0.27%
+compression loss on input2. For maximum compression fidelity, use 96 (+0.10% loss, 1.16× faster).
+For maximum speed, use 32 (+0.55% loss, 1.32× faster).
+
+**Example usage:**
+- Default (full BPTT, no loss): `./cmix.exe no-preprocess input output`
+- Fast mode: `./cmix.exe --lstm-bptt-depth 64 no-preprocess input output`
+
+**Date:** 2026-03-13
 
 ## Architecture Overview
 
@@ -643,7 +666,7 @@ profiles for an additional 5-10% speedup.
 | 6a | Mixer context cache | 1.05× | None | Low | **P1** | ✅ Done (via P0-6b) |
 | 7b | Reduce sigmoid table size | 1.02-1.05× | Minimal | Low | **P1** | — |
 | 12a | PGO build | 1.05-1.15× | None | Low | **P1** | ✅ Done |
-| 1a | LSTM truncated BPTT | 1.3-2× | Low-Med | Medium | **P2** | — |
+| 1a | LSTM truncated BPTT | 1.3-2× | Low-Med | Medium | **P2** | ✅ Done (opt-in `--lstm-bptt-depth`) |
 | 1b | Reduce BPTT frequency | 1.5-2× | Low | Medium | **P2** | — |
 | 5c | PPMd memset optimization | 1.02× | None | Low | **P2** | — |
 | 9 | SSE table size reduction | 1.05-1.1× | Needs testing | High | **P3** | — |

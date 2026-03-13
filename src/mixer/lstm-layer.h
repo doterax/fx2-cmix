@@ -39,7 +39,8 @@ class LstmLayer {
   void ForwardPass(const Eigen::VectorXf& input, int input_symbol,
       Eigen::VectorXf* hidden, int hidden_start);
   void BackwardPass(const Eigen::VectorXf& input, int epoch,
-      int layer, int input_symbol, Eigen::VectorXf* hidden_error);
+      int layer, int input_symbol, Eigen::VectorXf* hidden_error,
+      int bptt_start = 0);
   std::vector<Eigen::MatrixXf*> Weights();
 
  private:
@@ -57,7 +58,7 @@ class LstmLayer {
       int input_symbol);
   void BackwardPass(NeuronLayer& neurons, const Eigen::VectorXf&input,
       int epoch, int layer, int input_symbol,
-      Eigen::VectorXf* hidden_error);
+      Eigen::VectorXf* hidden_error, int bptt_start);
 };
 #include "lstm-layer.hpp"
 

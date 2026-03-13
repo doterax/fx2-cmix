@@ -37,7 +37,7 @@
 class Predictor : public IPredictor {
 public:
   Predictor(const std::vector<bool> &vocab, int ppmd_order = 25,
-            int ppmd_mem_mb = 1024);
+            int ppmd_mem_mb = 1024, int lstm_bptt_depth = 0);
   float Predict();
   void  Perceive(int bit);
   void  Pretrain(int bit);
@@ -76,8 +76,9 @@ private:
   FXCM                             fxcm_model_;
 
   // Config
-  int ppmd_order_  = 25;
-  int ppmd_mem_mb_ = 1024;
+  int ppmd_order_      = 25;
+  int ppmd_mem_mb_     = 1024;
+  int lstm_bptt_depth_ = 0;
 };
 
 #endif

@@ -153,7 +153,8 @@ inline void LstmLayer::ClipGradients(Eigen::VectorXf* arr) {
 }
 
 inline void LstmLayer::BackwardPass(const Eigen::VectorXf&input, int epoch,
-    int layer, int input_symbol, Eigen::VectorXf* hidden_error) {
+    int layer, int input_symbol, Eigen::VectorXf* hidden_error,
+    int bptt_start) {
   if (epoch == (int)horizon_ - 1) {
     stored_error_ = *hidden_error;
     state_error_.setZero();
@@ -181,7 +182,7 @@ inline void LstmLayer::BackwardPass(const Eigen::VectorXf&input, int epoch,
                          input_gate_state_[epoch].array()).matrix();
 
   hidden_error->setZero();
-  if (epoch > 0) {
+  if (epoch > bptt_start) {
     state_error_ = state_error_.cwiseProduct(forget_gate_.state_[epoch]);
     stored_error_.setZero();
   } else {
@@ -192,9 +193,9 @@ inline void LstmLayer::BackwardPass(const Eigen::VectorXf&input, int epoch,
     }
   }
 
-  BackwardPass(forget_gate_, input, epoch, layer, input_symbol, hidden_error);
-  BackwardPass(input_node_, input, epoch, layer, input_symbol, hidden_error);
-  BackwardPass(output_gate_, input, epoch, layer, input_symbol, hidden_error);
+  BackwardPass(forget_gate_, input, epoch, layer, input_symbol, hidden_error, bptt_start);
+  BackwardPass(input_node_, input, epoch, layer, input_symbol, hidden_error, bptt_start);
+  BackwardPass(output_gate_, input, epoch, layer, input_symbol, hidden_error, bptt_start);
 
   ClipGradients(&state_error_);
   ClipGradients(&stored_error_);
@@ -203,7 +204,7 @@ inline void LstmLayer::BackwardPass(const Eigen::VectorXf&input, int epoch,
 
 inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
     const Eigen::VectorXf&input, int epoch, int layer, int input_symbol,
-    Eigen::VectorXf* hidden_error) {
+    Eigen::VectorXf* hidden_error, int bptt_start) {
   if (epoch == (int)horizon_ - 1) {
     neurons.gamma_u_.setZero();
     neurons.beta_u_.setZero();
@@ -229,7 +230,7 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
   }
 
   // Recurrent error accumulation (to previous time step)
-  if (epoch > 0) {
+  if (epoch > bptt_start) {
     auto W_rec = neurons.weights_.block(0, offset, num_cells_, num_cells_);
     stored_error_.noalias() += W_rec.transpose() * neurons.error_;
   }
@@ -239,7 +240,7 @@ inline void LstmLayer::BackwardPass(NeuronLayer& neurons,
   neurons.update_.middleCols(output_size_, input_size).noalias() += neurons.error_ * input.transpose();
   neurons.update_.col(input_symbol) += neurons.error_;
   
-  if (epoch == 0) {
+  if (epoch == bptt_start) {
     // Use pre-computed running power products for bias correction
     float bias_corr1 = 1.0f - beta1_power_;
     float bias_corr2 = 1.0f - beta2_power_;
