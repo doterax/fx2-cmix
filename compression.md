@@ -227,13 +227,52 @@ The 550-byte win on input2 but 3K loss on enwik7 suggests the **crossover point 
 
 **Conclusion:** GRU is not a clear upgrade over LSTM for compression. The result depends on corpus size. For the primary enwik benchmark, LSTM remains the better sequence model. Reverting to LSTM for subsequent experiments.
 
-#### Full progression: ByteMixer v5 → Mix v1 → v2 → v3 → Full
+#### Full progression: ByteMixer v5 → Mix v1 → v2 → v3 → v4 → Full
 
-| Corpus | ByteMixer v5 | Mix v1 | Mix v2 (LSTM+SSE) | Mix v3 (GRU+SSE) | Full |
-|--------|-------------|--------|-------------------|-------------------|------|
-| input | 5,976 | 5,920 | 5,897 | **5,840** | 4,765 |
-| input2 | 181,669 | 181,323 | 180,420 | **179,870** | 158,273 |
-| enwik7 | 1,902,208 | 1,901,615 | **1,888,460** | 1,891,452 | — |
+| Corpus | ByteMixer v5 | Mix v1 | Mix v2 (LSTM+SSE) | Mix v3 (GRU+SSE) | Mix v4 (xLSTM+SSE) | Full |
+|--------|-------------|--------|-------------------|-------------------|---------------------|------|
+| input | 5,976 | 5,920 | 5,897 | **5,840** | 5,983 | 4,765 |
+| input2 | 181,669 | 181,323 | 180,420 | **179,870** | 190,711 | 158,273 |
+| enwik7 | 1,902,208 | 1,901,615 | **1,888,460** | 1,891,452 | 2,561,295 | — |
+
+### MixPredictor v4: xLSTM (sLSTM) replaces LSTM (experiment — FAILED)
+
+Replaced LSTM with **sLSTM** (from xLSTM, Hochreiter et al. 2024) — a modernized LSTM with:
+- **Exponential gating**: `exp()` instead of `sigmoid()` for forget and input gates, with log-space stabilization ($m_t = \max(\log f + m_{t-1}, \log i)$)
+- **Decoupled gates**: Separate input gate (LSTM uses coupled $i = 1 - f$), adding a 4th gate
+- **Normalizer state**: Tracks $n_t = f' \cdot n_{t-1} + i'$, replaces `tanh(c)` with $c / \max(|n|, 1)$
+
+Same hyperparameters (200 cells, 1 layer, horizon=128, lr=0.03).
+
+| Corpus | Input (bytes) | Output (bytes) | Ratio | Time | Speed |
+|--------|--------------|---------------|-------|------|-------|
+| input | 51,052 | 5,983 | 11.72% | 8.6s | 5,909 B/s |
+| input2 | 941,724 | 190,711 | 20.25% | 90.4s | 10,420 B/s |
+| enwik7 | 10,000,000 | 2,561,295 | 25.61% | 939.7s | 10,642 B/s |
+
+#### Comparison: v2 (LSTM) → v4 (xLSTM)
+
+| Corpus | v2 (LSTM) | v4 (xLSTM) | Delta | Regression |
+|--------|-----------|------------|-------|------------|
+| input (51K) | 5,897 | 5,983 | **+86** | +1.5% |
+| input2 (942K) | 180,420 | 190,711 | **+10,291** | +5.7% |
+| enwik7 (10M) | 1,888,460 | 2,561,295 | **+672,835** | +35.6% |
+
+**Catastrophic failure — xLSTM is dramatically worse, especially on larger data.** The enwik7 result (2.56M) is even worse than LSTM-only without any mixer (2.12M with english.dic), meaning the xLSTM is actively degrading compression quality on large data.
+
+**Why xLSTM failed for online compression:**
+
+1. **Exponential gate sensitivity**: `exp()` amplifies small weight perturbations far more than `sigmoid()`. With online learning (one sample at a time, no batching), this creates training instability. A sigmoid gate at pre-activation 2.0 gives 0.88; at 2.1 gives 0.89 (Δ=0.01). An exp gate at 2.0 gives 7.39; at 2.1 gives 8.17 (Δ=0.78). The model overreacts to each update.
+
+2. **Normalizer doesn't replace tanh effectively**: Standard LSTM's `tanh(c)` bounds the hidden state in [-1, 1] unconditionally. The normalizer $c/\max(|n|, 1)$ only bounds when $|n| \geq 1$. Early in training or after context shifts, $n$ can be small, letting $c$ pass through unbounded. This produces wild probability estimates that cost many bits.
+
+3. **Adam hyperparameters mismatch**: Our Adam (β₁=0.025, β₂=0.9999) was tuned for sigmoid/tanh activations. Exponential gates need much more conservative learning rates to prevent divergence. The UPDATE_LIMIT=3000 cap amplifies this — the learning rate floor is too high for exp gates.
+
+4. **The coupled gate regularizes well**: LSTM's $i = 1 - f$ constraint forces a tradeoff: more forgetting means less input, and vice versa. This implicit regularization prevents both gates from being large simultaneously. Decoupled exponential gates can both fire strongly, leading to unstable cell dynamics.
+
+5. **Speed penalty**: 4 gates instead of 3 → ~20% slower (10.6K vs 13.4K B/s), adding insult to injury.
+
+**Lesson:** xLSTM was designed for large-batch offline training on GPUs with careful hyperparameter tuning. Online, single-sample, CPU-based compression training is a fundamentally different regime where the original LSTM's bounded activations and coupled gates are features, not limitations. Reverting to LSTM.
 
 ---
 
