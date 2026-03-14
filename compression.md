@@ -193,6 +193,50 @@ Our micro-mixer outputs a probability via logistic regression: `p = Squash(w0*St
 - input2: 180,420 vs 158,273 — **22,147 bytes** (14.0% gap, was 14.8%)
 - The remaining gap comes from Match models (exact pattern matching), Indirect/Nonstationary state machines, Direct context models, and FXCM — plus the full predictor's 23 context-specific L0 mixers vs our 80 context-indexed micro-mixers.
 
+### MixPredictor v3: GRU replaces LSTM (experiment)
+
+Replaced the LSTM (Long Short-Term Memory) with a **GRU (Gated Recurrent Unit)** — a modern simplification of LSTM that merges the cell state and hidden state into a single hidden vector. Same number of weight matrices (3 gates), same hyperparameters (200 cells, 1 layer, horizon=128, lr=0.03).
+
+**GRU advantages over LSTM:**
+- No separate cell state — hidden state IS the memory, providing more direct gradient flow
+- Simpler update equations: `h = z*h_prev + (1-z)*candidate` vs LSTM's separate cell/output gating
+- Often converges faster on limited data (fewer internal dependencies)
+
+| Corpus | Input (bytes) | Output (bytes) | Ratio | Time | Speed |
+|--------|--------------|---------------|-------|------|-------|
+| input | 51,052 | **5,840** | 11.44% | 7.7s | 6,596 B/s |
+| input2 | 941,724 | **179,870** | 19.10% | 73.1s | 12,879 B/s |
+| enwik7 | 10,000,000 | **1,891,452** | 18.91% | 746.4s | 13,398 B/s |
+
+#### Comparison: v2 (LSTM+SSE) → v3 (GRU+SSE)
+
+| Corpus | v2 (LSTM) | v3 (GRU) | Delta | Winner |
+|--------|-----------|----------|-------|--------|
+| input (51K) | 5,897 | **5,840** | **-57** | GRU |
+| input2 (942K) | 180,420 | **179,870** | **-550** | GRU |
+| enwik7 (10M) | 1,888,460 | 1,891,452 | **+2,992** | LSTM |
+
+**Analysis — data-dependent crossover:**
+
+GRU wins on smaller corpora but LSTM wins on the largest. This reveals a classic bias-variance tradeoff:
+
+- **Small data (input, input2):** GRU's simpler architecture has lower variance — fewer internal parameters to fit means less overfitting. The direct gradient path (no cell state barrier) also helps the GRU converge faster with limited training data.
+- **Large data (enwik7):** LSTM's separate cell state provides additional memory capacity. With 10M bytes of training, the LSTM has enough data to fully utilize its cell state mechanism, capturing longer-range dependencies that the GRU's single hidden state cannot.
+
+The 550-byte win on input2 but 3K loss on enwik7 suggests the **crossover point is somewhere around 1-5M bytes**. For enwik8/enwik9 workloads, LSTM is likely the better choice (and is what the full predictor uses).
+
+**Conclusion:** GRU is not a clear upgrade over LSTM for compression. The result depends on corpus size. For the primary enwik benchmark, LSTM remains the better sequence model. Reverting to LSTM for subsequent experiments.
+
+#### Full progression: ByteMixer v5 → Mix v1 → v2 → v3 → Full
+
+| Corpus | ByteMixer v5 | Mix v1 | Mix v2 (LSTM+SSE) | Mix v3 (GRU+SSE) | Full |
+|--------|-------------|--------|-------------------|-------------------|------|
+| input | 5,976 | 5,920 | 5,897 | **5,840** | 4,765 |
+| input2 | 181,669 | 181,323 | 180,420 | **179,870** | 158,273 |
+| enwik7 | 1,902,208 | 1,901,615 | **1,888,460** | 1,891,452 | — |
+
+---
+
 #### Future idea: Closing tag content prediction
 
 Currently the Bracket model only predicts that the **closing bracket character** will appear at some distance — e.g., after `<title>Hello</`, it knows `>` will come but does NOT predict the tag name `title`. The tag name is handled by PPMd (order 25, which can match contexts up to 25 bytes) and LSTM (statistical patterns).
