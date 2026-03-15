@@ -227,13 +227,13 @@ The 550-byte win on input2 but 3K loss on enwik7 suggests the **crossover point 
 
 **Conclusion:** GRU is not a clear upgrade over LSTM for compression. The result depends on corpus size. For the primary enwik benchmark, LSTM remains the better sequence model. Reverting to LSTM for subsequent experiments.
 
-#### Full progression: ByteMixer v5 → Mix v1 → v2 → v3 → v4 → v5 → Full
+#### Full progression: ByteMixer v5 → Mix v1 → v2 → v3 → v4 → v5 → v6 → Full
 
-| Corpus | ByteMixer v5 | Mix v1 | Mix v2 (LSTM+SSE) | Mix v3 (GRU+SSE) | Mix v4 (xLSTM+SSE) | Mix v5 (RWKV+SSE) | Full |
-|--------|-------------|--------|-------------------|-------------------|---------------------|-------------------|------|
-| input | 5,976 | 5,920 | 5,897 | **5,840** | 5,983 | 5,873 | 4,765 |
-| input2 | 181,669 | 181,323 | 180,420 | **179,870** | 190,711 | 180,492 | 158,273 |
-| enwik7 | 1,902,208 | 1,901,615 | **1,888,460** | 1,891,452 | 2,561,295 | 1,893,276 | — |
+| Corpus | ByteMixer v5 | Mix v1 | Mix v2 (LSTM+SSE) | Mix v3 (GRU+SSE) | Mix v4 (xLSTM+SSE) | Mix v5 (RWKV+SSE) | Mix v6 (+TagPredict) | Full |
+|--------|-------------|--------|-------------------|-------------------|---------------------|-------------------|---------------------|------|
+| input | 5,976 | 5,920 | 5,897 | **5,840** | 5,983 | 5,873 | 5,897 | 4,765 |
+| input2 | 181,669 | 181,323 | 180,420 | **179,870** | 190,711 | 180,492 | 180,417 | 158,273 |
+| enwik7 | 1,902,208 | 1,901,615 | **1,888,460** | 1,891,452 | 2,561,295 | 1,893,276 | 1,888,457 | — |
 
 ### MixPredictor v4: xLSTM (sLSTM) replaces LSTM (experiment — FAILED)
 
@@ -314,6 +314,44 @@ RWKV shows the smallest enwik7 regression of any alternative sequence model test
 4. **Speed is identical**: 3 gates in both → ~13.3K B/s. No efficiency penalty.
 
 **Conclusion:** RWKV is the most viable LSTM alternative tested — it produces comparable compression and doesn't degrade catastrophically. However, for enwik-scale benchmarks, LSTM's input-dependent gating provides a consistent edge. Reverting to LSTM.
+
+### MixPredictor v6: Tag content prediction (experiment)
+
+Added a **tag content predictor** as a 4th mixer input (PPMd + LSTM + Bracket + TagPredict → 4-input NMicroMixer). The predictor maintains a stack of opening tag names and predicts closing tag name bytes when `</` (or `L/` after preprocessing) is encountered.
+
+**Implementation:**
+- State machine: IDLE → SAW_OPEN → IN_OPEN_NAME/IN_OPEN_ATTRS → IDLE (push tag) or → IN_CLOSE_NAME (predict) → IDLE (pop tag on confirmed match)
+- Handles `<`/`>` (raw mode) and `L`/`N` (preprocessed mode), `!`/`?` (comments/PIs), self-closing tags (`/>`), attributes
+- When predicting closing tag bytes: confidence 0.95 for correct bit, 0.05 for wrong bit via bot/mid/top decomposition
+- Stack capped at 256, tag names at 64 chars. Only pops on confirmed full match.
+
+| Corpus | Input (bytes) | Output (bytes) | Ratio | Time | Speed |
+|--------|--------------|---------------|-------|------|-------|
+| input | 51,052 | 5,897 | 11.55% | 7.5s | 6,807 B/s |
+| input2 | 941,724 | 180,417 | 19.16% | 73.3s | 12,853 B/s |
+| enwik7 | 10,000,000 | 1,888,457 | 18.88% | 727.5s | 13,745 B/s |
+
+#### Comparison: v2 (LSTM+SSE) → v6 (+TagPredict)
+
+| Corpus | v2 (LSTM+SSE) | v6 (+TagPredict) | Delta |
+|--------|--------------|------------------|-------|
+| input (51K) | 5,897 | 5,897 | 0 |
+| input2 (942K) | 180,420 | 180,417 | **-3** |
+| enwik7 (10M) | 1,888,460 | 1,888,457 | **-3** |
+
+**Essentially zero improvement.** The tag predictor saves exactly 3 bytes on both input2 and enwik7. This confirms the documented concerns:
+
+1. **Dictionary preprocessing absorbs most tags**: Common XML tags like `<title>`, `</title>`, `<text>` etc. are replaced by single dictionary tokens during preprocessing. The remaining raw tags in the stream are rare — uncommon tags, deeply nested structures, or tags that didn't make the dictionary.
+
+2. **`L` ambiguity causes false triggers**: After preprocessing, `<` becomes `L`, but regular `L` in text (very common — "Linux", "London", etc.) also triggers the state machine. This pushes garbage tag names onto the stack, causing most closing-tag lookups to find the wrong expected name. The mixer learns to mostly ignore the tag input because it's unreliable.
+
+3. **PPMd already handles residual tags**: PPMd order 25 captures tag names when the opening-to-closing span is < 25 bytes. For longer spans, the LSTM's statistical patterns fill in. Between them, there's very little compression gain left for a deterministic tag predictor.
+
+4. **The mixer correctly adapts**: Despite the noisy tag signal, compression doesn't degrade — the mixer weight for the tag input stays near zero, adding no noise. The 3-byte improvement is real but trivial: a few correctly predicted closing tag bytes across the entire corpus.
+
+**Speed:** Identical to v2 (~13.4K B/s on enwik7). The tag state machine adds negligible overhead.
+
+**Conclusion:** Tag content prediction is not worthwhile after dictionary preprocessing. The combination of `L` ambiguity and dictionary absorption leaves too few correctly-predictable tag bytes. The idea would work better on raw (non-preprocessed) data where `<`/`>` are unambiguous, but raw mode is not our benchmark configuration.
 
 ---
 
