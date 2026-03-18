@@ -679,3 +679,214 @@ Always compare exact byte counts (not percentages). Run seed=2 for consistency. 
 4. **Dictionary impacts are marginal once the full model is running** — english.dic saves ~800 KB on enwik8 at the PPMd-only level but less once the LSTM and mixers compensate. Custom dictionaries haven't beaten english.dic when total cost (compressed data + compressed dict) is considered.
 
 5. **The 431 FXCM sub-models dominate the input count but their individual impact is unclear** — they may add diversity the mixer exploits, or they may mostly be noise. Per-model ablation would clarify.
+
+---
+
+## PPMd Memory Footprint Analysis
+
+### Current Memory Budget
+
+| Component | Default | Competition | Notes |
+|-----------|---------|-------------|-------|
+| Heap (SubAllocatorSize) | 1024 MB | 14000 MB | `SASize << 20` bytes |
+| Text area (1/8) | 128 MB | 1750 MB | Stores symbol bytes during model update |
+| Context storage (7/8) | 896 MB | 12250 MB | PPM_CONTEXT + STATE arrays |
+| Static data (per instance) | ~15 KB | ~15 KB | BList, BinSumm, SEE2Cont, CharMask, SQ, sqp |
+
+**Heap dominates:** The ~15 KB of static/stack data is negligible. The 1–14 GB heap is the entire memory footprint.
+
+### Data Structure Inventory
+
+| Structure | Size | Packing | Count (order of magnitude) | Purpose |
+|-----------|------|---------|----------------------------|---------|
+| STATE | 6 B | packed | ~50–100M per GB | Symbol + frequency + successor index |
+| PPM_CONTEXT | 12 B (1 UNIT) | packed | ~25–50M per GB | Context tree node (NumStats, Flags, SummFreq, iStats, iSuffix) |
+| BLK_NODE | 8 B | packed | reused in free list | Free list node header |
+| MEM_BLK | 12 B (1 UNIT) | packed | reused in free list | Free block header (extends BLK_NODE with NU) |
+| SEE2_CONTEXT | 4 B | packed | 23×32 = 736 fixed | Secondary escape estimation |
+
+**Already-implemented optimizations:**
+1. **Pointer compression:** 8-byte pointers → 4-byte indices via `Ptr2Indx`/`Indx2Ptr`. Saves 4 bytes per STATE (iSuccessor) and 8 bytes per PPM_CONTEXT (iStats + iSuffix). Without this, STATE would be 10 B and PPM_CONTEXT 20 B — nearly 2× the current sizes.
+2. **Binary context optimization:** When `NumStats==0`, the single STATE is stored directly in the PPM_CONTEXT's `SummFreq` field — no separate allocation needed. This covers a large fraction of contexts (many contexts have only 1 or 2 symbols).
+3. **Segregated free list:** 38 size-class buckets minimize fragmentation waste. Freed blocks are reused efficiently.
+4. **#pragma pack(1):** All structures are byte-packed — no alignment padding waste.
+
+### Memory Optimization Proposals
+
+#### M1: Reduce text area ratio from 1/8 to 1/16 ★★★
+
+**Current situation:** `InitSubAllocator()` reserves 1/8 (12.5%) of the heap for text area storage. The text area holds symbol bytes written by `UpdateModel()` (`*pText++ = FSymbol`). These bytes serve as temporary successors for newly-created leaf contexts until `CreateSuccessors()` promotes them to full PPM_CONTEXT nodes.
+
+**The text area is aggressively recycled:**
+- `RestoreModelRare()` resets `pText = HeapStart` (full reclaim)
+- `ExpandTextArea()` moves `UnitsStart` forward, reclaiming text space
+- `PrepareTextArea()` + `cutOff()` are called in a loop until used memory < 3/4
+
+**Why 1/8 is too much:** With order 25, each processed byte writes at most 1 byte to text area (when `OrderFall > 0`). Before text area fills, `RestoreModelRare` triggers and resets it. On 1 GB heap, 128 MB of text area can hold 128M pending symbols — but context pruning recycles it long before that. On 14 GB heap, 1750 MB of text area for enwik9 (934 MB input) is nearly 2× the input size.
+
+**Proposal:** Change the split ratio to 1/16 (6.25%), freeing an additional 6.25% of heap for context storage.
+
+```cpp
+// Current (line ~513):
+qword Diff = SubAllocatorSize / 8 / UNIT_SIZE * 7 * UNIT_SIZE;
+// Proposed:
+qword Diff = SubAllocatorSize / 16 * 15 / UNIT_SIZE * UNIT_SIZE;
+```
+
+**Impact:**
+- 1 GB heap: +64 MB for contexts (128 MB → 64 MB text, 896 MB → 960 MB contexts)
+- 14 GB heap: +875 MB for contexts (1750 MB → 875 MB text, 12250 MB → 13125 MB contexts)
+- More context memory → fewer cutOff/restore cycles → more contexts retained → potentially better compression
+- Or: achieve same compression quality with less total memory
+
+**Risk:** Low. Text area recyclng is well-tested. Monitor for `pText >= UnitsStart` triggering more frequently. If it does, it just means more RestoreModelRare calls (already handles this case).
+
+**Validation:** Run enwik7 and enwik8 benchmarks. Compare compressed size, RestoreModelRare count, and GetUsedMemory peak.
+
+#### M2: Wrap debug printf/assert code in #ifdef ★★
+
+**Current situation:** The codebase contains extensive debug instrumentation:
+- ~50+ `printf()` statements for error diagnostics
+- ~100+ `assert()` calls with descriptive messages
+- `ValidateBList()` called after allocator operations
+- Bounds-checking in every `Ptr2Indx`, `Indx2Ptr`, `getSucc`, `getStats`, `suff` call
+
+**In release builds (`-DNDEBUG`):** `assert()` compiles to nothing, but `printf()` calls remain in the binary (inside dead `if` branches that the optimizer may or may not eliminate). The `ValidateBList` function and extensive bounds-check code bloat the instruction cache.
+
+**Proposal:** Wrap all debug-only code in a `PPMD_DEBUG` guard:
+
+```cpp
+#ifdef PPMD_DEBUG
+  #define PPMD_DPRINTF(...) printf(__VA_ARGS__)
+  #define PPMD_ASSERT(cond, msg) do { if (!(cond)) { printf msg; assert(false); } } while(0)
+#else
+  #define PPMD_DPRINTF(...) ((void)0)
+  #define PPMD_ASSERT(cond, msg) ((void)0)
+#endif
+```
+
+**Impact:**
+- Reduces compiled binary size by ~5–10 KB (fewer string literals, less dead code)
+- Improves I-cache utilization — the hot path (Ptr2Indx, Indx2Ptr, getStats, suff) becomes much shorter
+- No effect on heap memory or compression quality
+- Debug builds still have full instrumentation
+
+**Risk:** None for compression quality. Guard must not accidentally wrap functional code.
+
+#### M3: Optimize FreeUnits/FreeUnit zeroing ★
+
+**Current situation:** Both `FreeUnits()` and `FreeUnit()` zero the entire freed block before inserting into the free list:
+```cpp
+memset(ptr, 0, blockSize);  // FreeUnits: zeros 12*NU bytes
+memset(ptr, 0, UNIT_SIZE);  // FreeUnit: zeros 12 bytes
+```
+This was added as a "CRITICAL FIX" to prevent stale indices (iSuccessor, iStats, iSuffix) from being misinterpreted when blocks are reused by `GlueFreeBlocks()`.
+
+**The issue:** `GlueFreeBlocks()` checks `p1->Stamp == ~uint(0)` to detect adjacent free blocks. The `insert()` function writes `p->Stamp = ~uint(0)`. The memset ensures non-header bytes (bytes 8–11, 12–23, etc.) within the freed block don't accidentally have `0xFFFFFFFF` patterns that could cause false merges.
+
+**Proposal:** Replace full-block zeroing with header-only zeroing:
+```cpp
+// Zero only bytes beyond the BLK_NODE header (8 bytes) that insert() will overwrite
+// The first 8 bytes are immediately overwritten by insert() (Stamp + NextIndx)
+// Only need to zero remaining bytes that might contain stale Stamp patterns
+memset((byte*)ptr + sizeof(BLK_NODE), 0, blockSize - sizeof(BLK_NODE));
+```
+
+Or more targeted: zero only at UNIT_SIZE boundaries where `Stamp` fields would fall:
+```cpp
+for (uint i = 1; i < NU; i++)
+  ((uint*)((byte*)ptr + i * UNIT_SIZE))[0] = 0;  // Zero Stamp field at each unit boundary
+```
+
+**Impact:**
+- Saves ~40% of memset work for FreeUnit (zero 4 bytes instead of 12)
+- Saves more for large NU blocks  
+- No memory savings — this is pure performance optimization
+- No compression quality change
+
+**Risk:** Low but needs careful analysis. The GlueFreeBlocks merge logic must be reviewed to confirm only Stamp fields matter.
+
+#### M4: Configurable text area ratio ★
+
+**Current:** The 1/8 ratio is hardcoded in `InitSubAllocator()`.
+
+**Proposal:** Add a configurable parameter for the text/context split:
+
+```cpp
+uint Init(uint MaxOrder, uint MMAX, uint CutOff, uint filesize, int textRatioShift = 3) {
+  // textRatioShift=3 → 1/8, textRatioShift=4 → 1/16
+  ...
+}
+```
+
+This enables tuning per workload without code changes, and allows benchmarking different ratios.
+
+#### M5: Use mmap instead of new[] for large heaps ★
+
+**Current:** `HeapStart = new byte[t]` allocates the heap, then `memset(HeapStart, 0, t)` zeros it.
+
+**On Linux/macOS:** `mmap(MAP_ANONYMOUS)` returns zero-initialized pages on demand (lazy allocation). The OS only commits physical pages as they're touched. This means:
+- No upfront zeroing cost (saves seconds for 14 GB allocation)
+- Physical memory usage matches actual usage, not reserved size
+- Pages that are freed and not reused don't consume physical RAM
+
+**On Windows:** `VirtualAlloc(MEM_RESERVE | MEM_COMMIT)` provides similar behavior.
+
+**Impact:**
+- For 14 GB competition mode: saves ~14 seconds of zeroing at startup
+- Physical memory usage may be lower than the allocated size (OS manages pages)
+- No compression quality impact
+
+**Risk:** Low. Platform-specific code needed. Fallback to `new[]` + `memset` for portability.
+
+### Proposals NOT recommended (would hurt compression)
+
+#### ✗ Reduce iSuccessor to 3 bytes
+STATE's `iSuccessor` is 4 bytes (32-bit index). With 1 GB heap, max index ≈ 212M (fits in 28 bits). Could save 1 byte per STATE.
+
+**Why rejected:** With 14 GB heap, max index ≈ 1.25B, needs 31 bits — too tight for 24-bit. Also, 5-byte STATEs break the 2-per-UNIT alignment (12/5 = 2.4), requiring a complete allocator redesign.
+
+#### ✗ Reduce PPM_CONTEXT.iSuffix to 3 bytes
+Same issue — doesn't fit for competition mode, breaks struct alignment.
+
+#### ✗ Shrink UNIT_SIZE below 12 bytes
+UNIT_SIZE = 12 is the minimum for PPM_CONTEXT (12 bytes). Any smaller would require splitting contexts across units or redesigning the context structure.
+
+#### ✗ Reduce heap below 1024 MB
+Already measured: 14000 MB → 1024 MB costs ~64 KB on enwik8. Going lower would cost more compression quality, and the cutoff mechanism already handles pressure by pruning low-frequency contexts.
+
+### Priority Order
+
+| Priority | Proposal | Impact | Risk | Effort |
+|----------|----------|--------|------|--------|
+| **1** | M1: Text area 1/8 → 1/16 | +6.25% context memory | Low | Trivial (one line) |
+| **2** | M2: #ifdef debug code | Better I-cache, smaller binary | None | Medium (many edits) |
+| **3** | M4: Configurable text ratio | Enables tuning | None | Low |
+| **4** | M3: Targeted zeroing | Performance | Low | Low |
+| **5** | M5: mmap/VirtualAlloc | Reduced startup cost, lazy pages | Low | Medium |
+
+**Recommended first step:** Implement M1 (text area reduction) and benchmark on enwik7/enwik8. If compression improves or stays the same, it's a free win — more context memory without increasing the heap. If text area pressure increases (more RestoreModelRare calls), try 3/32 (9.375%) as a middle ground.
+
+### PPMd-Only Predictor Baselines
+
+Isolated PPMd predictor (`-p ppmd no-preprocess`), order 25, 14000 MB heap, no dictionary.
+
+| Corpus | Config | Output | Ratio | Factor | Time | Speed (B/s) | Resets |
+|--------|--------|-------:|------:|-------:|-----:|------------:|-------:|
+| enwik8 | baseline (1/8) | 20,774,111 | 20.774% | 4.814 | 383.7s | 260,643 | 0 |
+| enwik9 | baseline (1/8) | 165,283,254 | 16.528% | 6.050 | 3825.2s | 261,426 | 1 |
+| enwik9 | **M1 (1/16)** | **165,283,254** | **16.528%** | **6.050** | **3800.1s** | **263,149** | **1** |
+
+**Observations:**
+- **Speed is constant** at ~261–263 KB/s across all runs — PPMd context lookups scale well even at 10× input size.
+- **Enwik9 ratio is better** (16.5% vs 20.8%) — larger input means more context to exploit, order 25 benefits from longer history.
+- **Enwik9 triggers resets** — 14 GB heap is not sufficient for 1 GB input at order 25. The model had to prune exactly once via `RestoreModelRare`/`cutOff`.
+- **Comparison to full predictor:** enwik8 full predictor (PPMd+LSTM+Bracket) achieves 14,962,810 bytes — 28% smaller than PPMd-only. This shows the mixer/LSTM provide significant additional compression on top of PPMd.
+
+#### M1 Result: Neutral
+
+M1 (text area 1/8 → 1/16) produced **identical compressed output** (165,283,254 bytes) with a minor speed gain (~25s, 0.65% faster). Reset count is unchanged at 1.
+
+**Analysis:** The reset is not caused by text area exhaustion — it is caused by context storage running full. At 14 GB with order 25 on a 1 GB input, the context tree itself hits the 3/4 usage threshold regardless of how the remaining ~1.75 GB is split between text area and context storage. Extra context memory from M1 did not defer the reset because the tree grows to fill available space before the text area would've become the bottleneck.
+
+**Conclusion:** M1 is safe to keep (it doesn't hurt and gives a tiny speed benefit from smaller `memset` in `InitSubAllocator`), but it doesn't address the root cause. To delay/eliminate resets, the context tree itself needs to be pruned earlier or made smaller (lower order, less memory, or more aggressive cutOff thresholds).

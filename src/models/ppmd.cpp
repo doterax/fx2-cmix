@@ -2,20 +2,35 @@
 // mod_ppmd is adapted from ppmd by Eugene Shelwien.
 // This file is adapted from mod_ppmd_v2: http://encode.su/threads/2515-mod_ppmd
 // 15-Nov-2025: Alex.A.Yermoshenko (with help from ChatGPT):
-//               fix crush in reclaiming/pruning context memory blocks
+//               fix crash in reclaiming/pruning context memory blocks
 //               now it works correctly with all range of memory sizes
-
 //
-// PPMD (Prediction by Partial Matching, variant D) is a sophisticated
-// statistical compression algorithm that predicts the next byte based on
-// context.
+// PPMD (Prediction by Partial Matching, variant D) implementation.
+// Predicts the next byte based on variable-length context (up to order 25).
+//
+// Default: order 25, 1024 MB heap.  Competition: order 25, 14000 MB heap.
 //
 // Key components:
-// 1. Custom Memory Allocator - Efficiently manages millions of small
-// allocations
-// 2. Context Tree - Stores symbol statistics up to order 25
-// 3. Prediction Engine - Generates probabilities with escape mechanism
-// 4. Adaptive Learning - Updates frequencies as data is processed
+// 1. Custom Memory Allocator - Segregated free-list (38 buckets) + dual bump
+//    allocators (LoUnit↑ / HiUnit↓). Pointer compression: 64-bit → 32-bit
+//    indices via Ptr2Indx/Indx2Ptr. Heap split: 1/8 text area, 7/8 contexts.
+// 2. Context Tree - Each node (PPM_CONTEXT, 12 B) stores symbol statistics.
+//    Binary optimization: single-symbol contexts reuse SummFreq as STATE.
+//    Nodes allocated from HiUnit (downward); STATE arrays from LoUnit (upward).
+// 3. Prediction Engine - Escape mechanism tries longest context first, falls
+//    back to shorter ones. SEE2 (Secondary Escape Estimation) adapts escape
+//    probabilities. Binary contexts use BinSumm[25][64] lookup.
+// 4. Adaptive Learning - Frequencies updated online. Rescaling (÷2) prevents
+//    overflow. Memory cutoff (cutOff) prunes low-frequency contexts when
+//    heap exhausted; falls back to full model reset (StartModelRare).
+//
+// Data structures (all #pragma pack(1)):
+//   STATE:        6 bytes  (Symbol:1, Freq:1, iSuccessor:4)
+//   PPM_CONTEXT: 12 bytes  (NumStats:1, Flags:1, SummFreq:2, iStats:4, iSuffix:4)
+//   UNIT_SIZE:   12 bytes  (fits 1 PPM_CONTEXT or 2 STATEs)
+//   BLK_NODE:     8 bytes  (Stamp:4, NextIndx:4) — free list node
+//   MEM_BLK:     12 bytes  (Stamp:4, NextIndx:4, NU:4) — free block header
+//   SEE2_CONTEXT: 4 bytes  (Summ:2, Shift:1, Count:1)
 //
 // See PPMD.md for detailed documentation.
 
@@ -28,44 +43,40 @@ PPMD Heap Memory Layout
 ===============================================================================
 
 Total Size: SubAllocatorSize (e.g., 1 GB = 1,048,576 KB = 1,073,741,824 bytes)
-Unit Size: UNIT_SIZE = 12 bytes (stores one PPM_CONTEXT)
+Unit Size: UNIT_SIZE = 12 bytes (fits 1 PPM_CONTEXT or 2 STATEs)
 
 ===============================================================================
 ADDRESS         REGION              GROWS       DESCRIPTION
 ===============================================================================
 HeapStart   →   ┌─────────────────┐
                 │                 │
-                │   Text Area     │    ↓       Temporary storage for context
-                │   (pText)       │  (down)    data. Used during model
-                │                 │            operations. Expands downward
-                │                 │            from HeapStart.
+                │   Text Area     │    ↓       Stores symbol bytes written by
+                │   (pText)       │ (forward)  UpdateModel (*pText++ = sym).
+                │                 │            pText starts at HeapStart,
+                │                 │            grows forward (to higher addr).
 pText       →   ├─────────────────┤            Size: (pText - HeapStart)
                 │                 │
                 │   Free Space    │            Gap between text area and units
                 │                 │
 UnitsStart  →   ├─────────────────┤  ←───────  1/8 of heap reserved for text
                 │                 │            area. 7/8 of heap for context
-                │  Free List Area │            storage.
-                │  (BList[])      │            Segregated free lists by size
-                │                 │            N_INDEXES=38 buckets
-                │  ╔═════════════╗│
-                │  ║ Free Blocks ║│            Recycled memory blocks
-                │  ╚═════════════╝│            Organized by unit count
+                │  Allocated +    │            storage.
+                │  Free Blocks    │            LoUnit bumps forward; freed
+                │  (intermixed)   │            blocks returned to BList[]
+                │                 │            (38 free-list buckets, stored
+                │  ╔═════════════╗│            as struct member, not on heap).
+                │  ║ LoUnit ↑    ║│            STATE arrays bump-allocated
+                │  ╚═════════════╝│            from LoUnit upward (12 B/unit)
 LoUnit      →   ├─────────────────┤
-                │                 │    ↑
-                │   Allocated     │  (up)      STATE arrays & multi-stat
-                │   Units         │            contexts Bump allocated from
-                │   (Data)        │            LoUnit upward. Each unit = 12
-                │                 │            bytes. Grows toward HiUnit
-                ├─────────────────┤
+                │                 │
                 │   Free Space    │            Available memory between
-                │                 │            allocators. When
+                │                 │            LoUnit and HiUnit. When
 HiUnit      →   ├─────────────────┤            LoUnit == HiUnit → exhausted
-                │                 │    ↓
-                │   Allocated     │  (down)    PPM_CONTEXT nodes
+                │                 │    ↑
+                │   Allocated     │ (backward) PPM_CONTEXT nodes
                 │   Contexts      │            Bump allocated from HiUnit
-                │   (AllocContext)│            downward Each context = 12 bytes
-                │                 │            (1 UNIT) Grows toward LoUnit
+                │   (AllocContext)│            downward. Each = 12 bytes
+                │                 │            (1 UNIT). Grows toward LoUnit
 HeapStart +     └─────────────────┘
 SubAllocatorSize
 
@@ -74,7 +85,7 @@ SubAllocatorSize
 KEY POINTERS:
 -------------
 HeapStart    : Base address of entire heap (never changes)
-pText        : End of text area (grows down from HeapStart)
+pText        : End of text area (grows forward from HeapStart)
 UnitsStart   : Boundary between text area (1/8) and context storage (7/8)
                Can move forward during ExpandTextArea() - INVALIDATES all
                pointers!
@@ -117,10 +128,12 @@ CRITICAL ISSUES:
 
 STRUCTURE SIZES:
 ----------------
-STATE:        6 bytes  (Symbol:1, Freq:1, iSuccessor:4)
-PPM_CONTEXT:  12 bytes (NumStats:1, Flags:1, SummFreq:2, iStats:4, iSuffix:4)
-UNIT_SIZE:    12 bytes (stores 1 context or 2 states)
-MEM_BLK:      varies   (header for free blocks with NU field)
+STATE:         6 bytes  (Symbol:1, Freq:1, iSuccessor:4)
+PPM_CONTEXT:  12 bytes  (NumStats:1, Flags:1, SummFreq:2, iStats:4, iSuffix:4)
+UNIT_SIZE:    12 bytes  (fits 1 PPM_CONTEXT or 2 STATEs)
+BLK_NODE:      8 bytes  (Stamp:4, NextIndx:4)
+MEM_BLK:      12 bytes  (Stamp:4, NextIndx:4, NU:4)
+SEE2_CONTEXT:  4 bytes  (Summ:2, Shift:1, Count:1)
 
 ===============================================================================
 */
