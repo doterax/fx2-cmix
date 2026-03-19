@@ -869,24 +869,183 @@ Already measured: 14000 MB → 1024 MB costs ~64 KB on enwik8. Going lower would
 
 ### PPMd-Only Predictor Baselines
 
-Isolated PPMd predictor (`-p ppmd no-preprocess`), order 25, 14000 MB heap, no dictionary.
+Isolated PPMd predictor (`-p ppmd no-preprocess`), 14000 MB heap, no dictionary.
 
-| Corpus | Config | Output | Ratio | Factor | Time | Speed (B/s) | Resets |
-|--------|--------|-------:|------:|-------:|-----:|------------:|-------:|
-| enwik8 | baseline (1/8) | 20,774,111 | 20.774% | 4.814 | 383.7s | 260,643 | 0 |
-| enwik9 | baseline (1/8) | 165,283,254 | 16.528% | 6.050 | 3825.2s | 261,426 | 1 |
-| enwik9 | **M1 (1/16)** | **165,283,254** | **16.528%** | **6.050** | **3800.1s** | **263,149** | **1** |
+| Corpus | Order | Output | Ratio | Time | Speed (B/s) | Heap used | Resets |
+|--------|------:|-------:|------:|-----:|------------:|----------:|-------:|
+| enwik7 | 25 | 2,284,952 | 22.850% | 39.6s | 252,334 | 250 MB (1.8%) | 0 |
+| enwik7 | 18 | 2,284,922 | 22.849% | 40.6s | 246,451 | 221 MB (1.6%) | 0 |
+| enwik8 | 25 | 20,774,111 | 20.774% | 383.7s | 260,643 | — | 0 |
+| enwik9 | 25 | 165,283,254 | 16.528% | 3825.2s | 261,426 | 9913 MB (70.8%) | 1 at 68% |
+| enwik9 | 22 | 165,288,589 | 16.529% | 3973.8s | 251,646 | 8455 MB (60.4%) | 1 at 74.5% |
+| enwik9 | 18 | 165,169,516 | 16.517% | 4028.7s | 248,219 | 6081 MB (43.4%) | 1 at 92.2% |
 
 **Observations:**
-- **Speed is constant** at ~261–263 KB/s across all runs — PPMd context lookups scale well even at 10× input size.
-- **Enwik9 ratio is better** (16.5% vs 20.8%) — larger input means more context to exploit, order 25 benefits from longer history.
-- **Enwik9 triggers resets** — 14 GB heap is not sufficient for 1 GB input at order 25. The model had to prune exactly once via `RestoreModelRare`/`cutOff`.
-- **Comparison to full predictor:** enwik8 full predictor (PPMd+LSTM+Bracket) achieves 14,962,810 bytes — 28% smaller than PPMd-only. This shows the mixer/LSTM provide significant additional compression on top of PPMd.
+- **Enwik7 order 18 vs 25: +30 bytes (+0.001%)** — for small inputs the order makes zero difference in quality. Both use <250 MB of the 14 GB heap.
+- **Speed is ~246–261 KB/s** across all runs — within run-to-run noise.
+- **Enwik9 ratio improves with larger input** (16.5% vs 20.8% for enwik8) — order 25 benefits from more context history on larger corpora.
+- **Enwik9 triggers 1 reset regardless of order** (25, 22, 18) — the tree fills all 14 GB for a 1 GB input at any practical order depth. However, the reset position shifts dramatically: order 18 fires at 92% vs order 25 at 68%.
+- **Order 18 produces the best output** — 165,169,516 bytes, **−113,738 bytes (−0.069%) better than order 25**. Later reset = only 8% of corpus compresses without full context history, vs 32% for order 25.
+- **Comparison to full predictor:** enwik8 full predictor (PPMd+LSTM+Bracket) achieves 14,962,810 bytes — 28% smaller than PPMd-only. Mixer/LSTM provide significant additional compression on top of PPMd.
 
 #### M1 Result: Neutral
 
-M1 (text area 1/8 → 1/16) produced **identical compressed output** (165,283,254 bytes) with a minor speed gain (~25s, 0.65% faster). Reset count is unchanged at 1.
+M1 (text area 1/8 → 1/16) produced **identical compressed output** (165,283,254 bytes) with no meaningful speed change (within noise). Reset count is unchanged at 1, occurring at the same point (~68% input).
 
-**Analysis:** The reset is not caused by text area exhaustion — it is caused by context storage running full. At 14 GB with order 25 on a 1 GB input, the context tree itself hits the 3/4 usage threshold regardless of how the remaining ~1.75 GB is split between text area and context storage. Extra context memory from M1 did not defer the reset because the tree grows to fill available space before the text area would've become the bottleneck.
+**Analysis:** The reset is not caused by text area exhaustion — it is caused by context storage hitting the 3/4 full threshold. At 14 GB with order 25 on a 1 GB input, the context tree grows to fill available space regardless of the text/context split ratio. The extra ~875 MB of context storage freed by M1 is consumed by the growing tree just as quickly, so the reset merely shifts by a few MB of processed input rather than being deferred meaningfully.
 
-**Conclusion:** M1 is safe to keep (it doesn't hurt and gives a tiny speed benefit from smaller `memset` in `InitSubAllocator`), but it doesn't address the root cause. To delay/eliminate resets, the context tree itself needs to be pruned earlier or made smaller (lower order, less memory, or more aggressive cutOff thresholds).
+**Conclusion:** M1 is safe to keep (it doesn't hurt compression), but it doesn't address the root cause. M1 is reverted in the priority table — no further text-area experiments are warranted. To delay/eliminate resets, options are: increase total heap, lower order, or tune `cutOff`/GlueCount thresholds to prune more aggressively before the 3/4 threshold.
+
+#### Heap Profile — enwik9 reset anatomy (14 GB, order 25)
+
+Full `PrintHeapStats` data from the corrected instrumentation (before-reset, after-reset, end-of-compression):
+
+```
+[heap-stats before-reset]   @ 68.19% = ~682 MB processed
+  used:            13999 MB  (100.0%)      ← allocation failure, not threshold hit
+  to-threshold:        0 MB headroom
+  text-area:         480 MB / 875 MB cap  (54.9%)
+  ctx-hi-alloc:     8599 MB  (PPM_CONTEXT nodes, from top downward)
+  ctx-lo-alloc:     4919 MB  (STATE arrays, from base upward)
+  ctx-gap-free:        0 MB  (both fronts met — no bump-pointer room left)
+  mid-gap:             0 MB
+  free-list:           0 MB  (0 buckets)
+  frag-score:        0.0%
+
+[heap-stats after-reset]    (immediately after RestoreModelRare)
+  used:             4884 MB  (34.9%)       ← 9115 MB freed (65% of heap!)
+  to-threshold:     5615 MB headroom
+  ctx-hi-alloc:     8599 MB  (UNCHANGED — PPM_CONTEXT ptrs not moved)
+  ctx-lo-alloc:     4919 MB  (UNCHANGED — LoUnit/HiUnit not moved)
+  ctx-gap-free:        0 MB
+  mid-gap:           480 MB  (text area reset to HeapStart)
+  free-list:        8634 MB  (26 non-empty buckets)
+  frag-score:       93.9%    ← CRITICAL: nearly all free memory is tiny fragments
+  frag-small:       8110 MB  <=4u   (632,929,535 blocks)   ← ~1u avg = 1 STATE entry
+  frag-medium:       464 MB  5-16u  (5,495,636 blocks)
+  frag-large:         59 MB  >16u   (232,936 blocks)
+
+[heap-stats end-of-compression]   @ 100%
+  used:             9913 MB  (70.8%)       ← just under 75%, no second reset
+  to-threshold:      586 MB headroom
+  ctx-hi-alloc:     8599 MB  (unchanged)
+  ctx-lo-alloc:     4919 MB  (unchanged)
+  free-list:        3849 MB  (30 buckets)
+  frag-score:        0.0%
+  frag-small:          0 MB  <=4u   (0 blocks)
+  frag-medium:         0 MB  5-16u  (1 block)
+  frag-large:       3849 MB  >16u   (8,869,246 blocks)
+```
+
+**Analysis:**
+
+**1. The reset trigger is allocation exhaustion, not the 75% threshold.**
+The 75% threshold (`GetUsedMemory() > 3/4 * SubAllocatorSize`) is the *stopping condition* of the `RestoreModelRare` loop — it keeps pruning until used < 75%. The *trigger* is when `AllocUnitsRare` returns null (bump-pointer space gone, free-list empty). By that point the heap is 100% full with 0 free-list entries.
+
+**2. `RestoreModelRare` frees aggressively: 13999 → 4884 MB (65% freed).**
+However, it does so by calling `cutOff()` which traverses the context tree and individually frees STATE entry arrays one block at a time. With order 25, most leaf contexts have 1–4 states → freed as 1–4 unit blocks. Result: **632 million tiny free blocks**, 93.9% of freed memory is ≤48 bytes.
+
+**3. `ctx-hi-alloc` and `ctx-lo-alloc` are address ranges, not live-object counts.**
+They reflect where `HiUnit` and `LoUnit` pointers are relative to the heap ends. They don't change during reset because the free-list mechanism is used, not bump-pointer retraction. The 4884 MB of "used" after reset is the truly live context tree nodes.
+
+**4. Post-reset fragmentation resolves itself by end-of-compression.**
+By the final stats, `frag-small = 0 MB`, `frag-large = 3849 MB`. The 632M tiny blocks all got reallocated (new contexts), re-freed during natural model updates, and coalesced by `GlueFreeBlocks` into 8.9M large (>16u) blocks. The allocator's defragmentation works, but it takes the entire remaining 318 MB of input to converge.
+
+**5. The ~32% of input processed after reset compresses sub-optimally.**
+After reset the model has no accumulated context history — it essentially restarts from order 0 and rebuilds. The first several MB of post-reset compression have much weaker predictions until context depth grows back. This is the primary compression quality cost of the reset.
+
+#### Next Step Options: Eliminate the Reset
+
+Goal: process all 1 GB of enwik9 at order 25 without ever hitting allocation exhaustion.
+
+**Option A — Lower order (recommended first test)**
+
+| Order | Heap at reset | Reset at | End used | Output bytes (enwik9) | Quality delta |
+|-------|--------------|----------|----------|----------------------|---------------|
+| 25 | 13999 MB (measured) | 68.19% | 70.8% | 165,283,254 | baseline |
+| 22 | 13999 MB (measured) | 74.53% | 60.4% | 165,288,589 | +0.003% |
+| 18 | 13999 MB (measured) | 92.19% | 43.4% | **165,169,516** | **−0.069%** ✓ best |
+| — | enwik7 order 25 | no reset | 1.8% | 2,284,952 | baseline |
+| — | enwik7 order 18 | no reset | 1.6% | 2,284,922 | −0.001% |
+
+**Corrected understanding:** The PPMd tree is **not memory-bounded by order** in the way initially estimated. It is input-bounded: with enough input, it will build contexts up to the given order for every n-gram seen, regardless of available memory — until it exhausts the heap. For a 1 GB corpus at 14 GB heap, both order 25 and order 22 fill all 14 GB, just at different corpus positions. The original estimates (order 22 → ~9 GB, order 18 → ~4 GB) were wrong.
+
+The correct model: the tree fills memory at a rate proportional to `corpus_size × order × avg_branching_factor`. For enwik9 at 14 GB: order 25 fills at 68%, order 22 fills at 74.5% — a 6.3% shift per 3 orders. At this rate, eliminating the reset by order reduction alone would require approximately **order ≤ 5**, which would be useless for compression.
+
+Context count scales roughly as O(n × order) for new unique n-grams. Going from 25→20 is a 20% reduction in max depth, but in practice high-order (20–25) contexts are sparse and dominate the tree. Estimate: order 20 uses ~40–50% of the heap that order 25 does.
+
+**Order 18 result:** 165,169,516 bytes — **113,738 bytes better than order 25**. The later reset position (92% vs 68%) means only 8% of the corpus suffers post-reset degradation. The quality advantage of deeper contexts (order 25) is outweighed by the quality cost of losing 32% of the corpus to a post-reset cold-start.
+
+**Option B — Proactive voluntary reset (early threshold)**
+
+Instead of waiting for allocation failure, add a check in `ByteUpdate` (or periodically in `encodeSymbol`) that calls `RestoreModelRare` when `GetUsedMemory() > 0.80 * SubAllocatorSize`. Benefits:
+- Reset fires at 80% fill instead of 100% — more room to prune gracefully
+- Smaller free-list fragmentation (tree hasn't grown as deep)
+- Can keep order 25 and still avoid allocation exhaustion
+- Fewer tiny-block fragments → faster post-reset allocation
+
+Implementation: add a `proactiveResetThreshold` field (e.g., 0.80), check it at `ByteUpdate` boundaries.
+
+**Option C — Accept one reset, tune the cutOff depth**
+
+Currently `cutOff(MaxContext, 0, _MaxOrder)` keeps contexts up to max order. Passing a lower depth limit (e.g., order 15) during reset would free significantly more memory per reset call, giving more post-reset headroom at the cost of losing deeper context history sooner.
+
+#### Order 22 Result (14 GB heap, enwik9)
+
+| Metric | Order 25 | Order 22 | Delta |
+|--------|----------|----------|-------|
+| Output bytes | 165,283,254 | 165,288,589 | +5,335 (+0.003%) |
+| Reset at | 68.19% | 74.53% | +6.3% later |
+| After-reset used | 34.9% | 35.9% | similar |
+| End used | 70.8% | 60.4% | −10.4% |
+| Speed | ~258 KB/s | ~252 KB/s | −2% |
+
+**Key findings:**
+
+1. **Quality is essentially identical** — +0.003% difference is noise. Order 22 is as good as order 25 for enwik9.
+
+2. **Reset still fires** — the tree fills all 14 GB regardless of order (22 or 25). Lower order just postpones the fill point: each −3 orders moves the reset ~6% later in the corpus. To fully eliminate the reset by reducing order alone, extrapolation suggests order ≤ 10–12, which would likely hurt compression significantly.
+
+3. **Post-reset portion decreases**: 25% of corpus after reset (order 22) vs 32% (order 25). Real benefit, but reset is not eliminated.
+
+4. **After-reset fragmentation is identical in character**: 93.4% frag-score (612M tiny blocks, order 22) vs 93.9% (632M tiny blocks, order 25). The fragmentation pattern is structural — it comes from how `cutOff()` individually frees single-state entries, independent of order.
+
+5. **End-of-compression has 2044 MB headroom** (order 22) vs 586 MB (order 25). The lower order is more conservative overall.
+
+**Conclusion on order reduction:** Order reduction alone cannot eliminate the reset at 14 GB for a 1 GB corpus at any practical order (≥16). The tree will always grow to fill available memory. The structural fix must be either (a) proactive pruning before exhaustion, or (b) a hard memory cap enforced before the tree fills completely.
+
+**Recommended experiment sequence:**
+1. ✅ ~~Test order 22~~ — same quality (+0.003%), reset still fires
+2. ✅ ~~Test order 18~~ — **best output so far (−0.069% vs order 25)**; reset fires at 92%, only 8% post-reset
+3. **Implement gentle reset (Option D)** — proactive frequency-based pruning (Freq≤1 removal) at ~80% fill:
+   - Keep order 25 for context depth, but prune cold states before exhaustion
+   - Goal: eliminate the reset entirely, or push it past 95%+
+   - If gentle reset frees enough memory, order 25 may beat order 18
+4. If gentle reset doesn't fully prevent a hard reset, combine: order 18 + gentle reset
+
+#### Order 18 Result (14 GB heap, enwik9) — **Best result so far**
+
+| Metric | Order 25 | Order 22 | Order 18 |
+|--------|----------|----------|----------|
+| Output bytes | 165,283,254 | 165,288,589 | **165,169,516** |
+| Delta vs order 25 | baseline | +5,335 (+0.003%) | **−113,738 (−0.069%)** |
+| Reset at | 68.19% | 74.53% | **92.19%** |
+| Post-reset corpus | 31.8% | 25.5% | **7.8%** |
+| After-reset used | 34.9% | 35.9% | 38.3% |
+| End used | 70.8% | 60.4% | 43.4% |
+| Speed | ~261 KB/s | ~252 KB/s | ~248 KB/s |
+
+**Key findings:**
+
+1. **Order 18 produces the best enwik9 compression** — 113 KB better than order 25. This is counter-intuitive: lower order → better compression. The explanation is entirely about reset timing.
+
+2. **The reset / post-reset tradeoff dominates.** At order 25: 32% of the corpus is processed in a cold-start state (model rebuilt from scratch after reset). At order 18: only 8%. The 24% difference in cold-start fraction, each cold byte compressing significantly worse, more than compensates for the shallower context depth.
+
+3. **Reset fires at 92.2%** — only 78 MB of input processed post-reset. The after-reset frag pattern is similar: 92.2% frag-score, 568M tiny blocks.
+
+4. **End-of-compression used: only 43.4%** (6081 MB of 14000 MB) — more than half the heap is unused at completion. The tree never had time to densify after the reset. This confirms order 18 with 14 GB is significantly over-provisioned.
+
+5. **Fragmentation model confirmed**: frag-score drops from 92.2% (immediately after reset) to 15.5% at end of compression — same healing pattern as order 25.
+
+**Implication for gentle reset:** Order 18 sets the quality bar at 165,169,516. A gentle reset on order 25 needs to do better than this. If it can defer/eliminate the reset on order 25 such that <8% of the corpus is processed post-reset (or with graceful degradation), it should beat order 18.
+
