@@ -534,6 +534,54 @@ struct ppmd_Model {
     return RetVal;
   }
 
+  void PrintHeapStats(const char *label) {
+    // Region sizes
+    qword total      = SubAllocatorSize;
+    qword textCap    = UnitsStartBase - HeapStart;           // text area capacity (fixed at init)
+    qword textUsed   = pText - HeapStart;                    // bytes written to text area
+    qword hiAlloc    = (HeapStart + total) - HiUnit;         // context nodes allocated from top (downward)
+    qword loAlloc    = LoUnit - UnitsStart;                  // unit arrays allocated from base (upward)
+    qword frontGap   = HiUnit - LoUnit;                      // free space between the two fronts (0 when full)
+    qword midFree    = UnitsStart - pText;                   // gap between text end and UnitsStart
+    // Free list inventory + fragmentation breakdown by size class
+    qword freeBytes  = 0;
+    uint  nonEmpty   = 0;
+    qword smallFree  = 0, medFree  = 0, largeFree  = 0;  // by unit-count group
+    uint  smallBlk   = 0, medBlk   = 0, largeBlk   = 0;
+    for (int i = 0; i < N_INDEXES; i++) {
+      uint cnt = BList[i].Stamp;
+      if (!cnt) continue;
+      qword gb = qword(Indx2Units[i] * cnt) * UNIT_SIZE;
+      freeBytes += gb;
+      nonEmpty++;
+      if      (Indx2Units[i] <= 4)  { smallFree += gb; smallBlk += cnt; }
+      else if (Indx2Units[i] <= 16) { medFree   += gb; medBlk   += cnt; }
+      else                          { largeFree += gb; largeBlk += cnt; }
+    }
+    double fragScore = freeBytes > 0 ? 100.0 * smallFree / freeBytes : 0.0;
+    qword used      = GetUsedMemory();
+    qword threshold = 3 * (total >> 2);  // 75% full triggers reset
+    qword headroom  = used < threshold ? threshold - used : 0;
+
+    printf("[heap-stats %s]\n", label);
+    printf("  total:        %8llu MB\n", total     >> 20);
+    printf("  used:         %8llu MB  (%.1f%%)\n", used >> 20, 100.0 * used / total);
+    printf("  to-threshold: %8llu MB headroom  (reset at 75%%)\n", headroom >> 20);
+    printf("  text-area:    %8llu MB used / %llu MB cap  (%.1f%%)\n",
+           textUsed >> 20, textCap >> 20, textCap ? 100.0 * textUsed / textCap : 0.0);
+    printf("  ctx-hi-alloc: %8llu MB  (PPM_CONTEXT nodes, from top downward)\n", hiAlloc >> 20);
+    printf("  ctx-lo-alloc: %8llu MB  (STATE arrays, from base upward)\n",       loAlloc >> 20);
+    printf("  ctx-gap-free: %8llu MB  (free between fronts; 0 = both fronts met)\n", frontGap >> 20);
+    printf("  mid-gap:      %8llu MB  (reclaimed text area below UnitsStart)\n", midFree >> 20);
+    printf("  free-list:    %8llu MB  (%u non-empty buckets)\n", freeBytes >> 20, nonEmpty);
+    printf("  frag-score:   %7.1f%%  (%% of free in small <=4u blocks)\n", fragScore);
+    printf("  frag-small:   %8llu MB  <=4u   (%u blocks)\n", smallFree >> 20, smallBlk);
+    printf("  frag-medium:  %8llu MB  5-16u  (%u blocks)\n", medFree   >> 20, medBlk);
+    printf("  frag-large:   %8llu MB  >16u   (%u blocks)\n", largeFree >> 20, largeBlk);
+    printf("  resets so far: %u (hard) + %u (gentle)\n", resetCount, gentleResetCount);
+    fflush(stdout);
+  }
+
   // Free all allocated memory
   void StopSubAllocator() {
     if (SubAllocatorSize)
@@ -1183,6 +1231,9 @@ struct ppmd_Model {
   int          RunLength;
   int          InitRL;
   bool         Verbose;
+  uint         resetCount = 0;
+  uint         gentleResetCount = 0;
+  uint         bytesProcessed = 0;
 
   enum {
     INT_BITS    = 7,
@@ -2315,7 +2366,10 @@ PPMD::PPMD(int order, int memory, const unsigned int &bit_context,
   ppmd_model_->Init(order, memory, 1, 0); // memory << 20 bytes allocated!
 }
 
-PPMD::~PPMD() {}
+PPMD::~PPMD() {
+  if (ppmd_model_ && ppmd_model_->Verbose)
+    ppmd_model_->PrintHeapStats("end-of-compression");
+}
 
 // Called after each byte to update model and generate new predictions
 // Output: probs_ contains probability distribution for next 256 possible bytes
