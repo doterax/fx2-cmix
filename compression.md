@@ -378,6 +378,47 @@ A specialized **tag-content predictor** could:
 
 ---
 
+## Eigen SIMD LSTM Optimization (October 2025)
+
+### Motivation: LSTM is the bottleneck
+
+From the baselines table, the processing speed difference between PPMd-only and PPMd+LSTM is stark:
+
+| Predictor | Speed | Notes |
+|-----------|-------|-------|
+| PPMd-only (`-p ppmd`) | ~261,000 B/s | enwik9 baseline |
+| PPMd + LSTM (v5) | ~13,487 B/s | ByteMixer v5, enwik7 |
+
+**LSTM accounts for ~95% of total runtime.** The matrix-vector products in the LSTM forward and backward passes (weight matrices `200×256` input + `200×200` recurrent = ~360 KB of floats per gate, 3 gates) are the dominant cost. PPMd is essentially free by comparison.
+
+This makes the LSTM the highest-leverage optimization target — any speedup there directly translates to total runtime reduction.
+
+### Eigen SIMD Implementation
+
+Replaced scalar matrix-vector multiply loops in the LSTM with Eigen SIMD operations, enabling the compiler to use vectorized SIMD instructions (SSE/AVX on x86) automatically through Eigen's expression templates.
+
+**Results on input (51,052 bytes), full predictor:**
+
+| Implementation | Output (bytes) | Time | Speed |
+|----------------|---------------|------|-------|
+| Scalar (before Eigen) | 6,147 | 41.33s | ~1,235 B/s |
+| Eigen SIMD (after) | 6,141 | 17.00s | ~3,003 B/s |
+| **Speedup** | — | **2.43×** | — |
+
+The 6-byte difference (6,147 → 6,141) is random seed noise — the LSTM weights are randomly initialized so results vary by a few bytes across runs. It is not a compression quality improvement.
+
+### Implications
+
+**Hutter Prize time constraint:** The competition requires a maximum 50-hour runtime. The previous enwik9 full predictor run took ~63 hours (above the limit). With 2.43× speedup assuming the ratio holds at scale: 63 ÷ 2.43 ≈ **26 hours** — comfortably within the 50-hour limit.
+
+**Scaling assumption:** The speedup should be roughly constant across corpus sizes. The LSTM weight matrices are fully in L2 cache (~360 KB) and the same access pattern repeats for every byte. There is no cache-miss scaling penalty. If anything, startup overhead is better amortized at large scale.
+
+**Opens the door to more complex LSTM configs:** With SIMD, the compute for a second layer is also vectorized. The 128×2 LSTM experiment (T1-1 in Improvement Opportunities) was previously estimated at 1.16× slower than 200×1 scalar. That estimate should be re-measured with Eigen — the absolute time increase for a second layer may now be smaller than the pre-SIMD estimate.
+
+**Note:** The speed measurements in earlier experiment tables (ByteMixer v1–v5, MixPredictor v1–v6) were all on scalar code. Speeds of ~13,000–14,000 B/s in those tables will be approximately 2.4× higher with Eigen on the same hardware.
+
+---
+
 ## Current Baselines
 
 | Corpus | Mode | Dictionary | Result (bytes) | Time |
