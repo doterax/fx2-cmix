@@ -879,6 +879,7 @@ Isolated PPMd predictor (`-p ppmd no-preprocess`), 14000 MB heap, no dictionary.
 | enwik9 | 25 | 165,283,254 | 16.528% | 3825.2s | 261,426 | 9913 MB (70.8%) | 1 at 68% |
 | enwik9 | 22 | 165,288,589 | 16.529% | 3973.8s | 251,646 | 8455 MB (60.4%) | 1 at 74.5% |
 | enwik9 | 18 | 165,169,516 | 16.517% | 4028.7s | 248,219 | 6081 MB (43.4%) | 1 at 92.2% |
+| enwik9 | 25+cut18 | 165,200,952 | 16.520% | 4042.1s | 247,396 | 11,442 MB (81.7%) | 1 at 68% |
 
 **Observations:**
 - **Enwik7 order 18 vs 25: +30 bytes (+0.001%)** — for small inputs the order makes zero difference in quality. Both use <250 MB of the 14 GB heap.
@@ -1017,11 +1018,8 @@ Currently `cutOff(MaxContext, 0, _MaxOrder)` keeps contexts up to max order. Pas
 **Recommended experiment sequence:**
 1. ✅ ~~Test order 22~~ — same quality (+0.003%), reset still fires
 2. ✅ ~~Test order 18~~ — **best output so far (−0.069% vs order 25)**; reset fires at 92%, only 8% post-reset
-3. **Implement gentle reset (Option D)** — proactive frequency-based pruning (Freq≤1 removal) at ~80% fill:
-   - Keep order 25 for context depth, but prune cold states before exhaustion
-   - Goal: eliminate the reset entirely, or push it past 95%+
-   - If gentle reset frees enough memory, order 25 may beat order 18
-4. If gentle reset doesn't fully prevent a hard reset, combine: order 18 + gentle reset
+3. ✅ ~~**Gentle reset (Option D)**~~ — **Abandoned** (see PPMd Reset Strategy Research): low-address context node corruption under `AllocUnitsRare` text-steal cannot be prevented without restructuring the allocator.
+4. ✅ ~~**Order 25 + `_resetMaxOrder=18`**~~ — tested: 165,200,952 bytes. Better than order-25 baseline (−82,302 bytes, −0.050%) but worse than pure order-18 (+31,436 bytes). Reset still fires at 68.19%; reset timing dominates over context preservation.
 
 #### Order 18 Result (14 GB heap, enwik9) — **Best result so far**
 
@@ -1048,4 +1046,85 @@ Currently `cutOff(MaxContext, 0, _MaxOrder)` keeps contexts up to max order. Pas
 5. **Fragmentation model confirmed**: frag-score drops from 92.2% (immediately after reset) to 15.5% at end of compression — same healing pattern as order 25.
 
 **Implication for gentle reset:** Order 18 sets the quality bar at 165,169,516. A gentle reset on order 25 needs to do better than this. If it can defer/eliminate the reset on order 25 such that <8% of the corpus is processed post-reset (or with graceful degradation), it should beat order 18.
+
+---
+
+## PPMd Reset Strategy Research
+
+### Gentle Reset Experiment (Abandoned — March 2026)
+
+**Goal:** Replace the full `RestoreModelRare()` (which prunes all contexts below a frequency threshold across the entire tree) with a lighter `GentleRestoreModel()` pass that only removes leaf contexts with `Freq <= 1`. The intent was to preserve valuable mid-order contexts (order 3–18) and reduce the compression ratio degradation that occurs because all accumulated context history is lost after each reset.
+
+**What was built:**
+- `gentleCutOff()` — mirror of `cutOff()` that removes only leaf STATE entries with `Freq <= freqThreshold` (default 1), leaving non-leaf contexts untouched
+- `gc_mustKeep_` protection set — BFS-collected set of every context that is the `iSuffix` target of a live context; these are protected from freeing to prevent dangling suffix pointers
+- `ValidateHeap()` — BFS-based structural verifier with dangling-`iSuffix` detection, called after each gentle reset to confirm heap integrity
+- Cascade of `suff()` null-guard fixes across all callers in `UpdateModel`, `ReduceOrder`, `ppmd_PrepareByte`, `ppmd_UpdateByte`, `CreateSuccessors`, `RestoreModelRare`, and `GentleRestoreModel`
+
+**Three problems encountered:**
+
+1. **Low-address context nodes:** `AllocUnitsRare` legally decrements `UnitsStart` into the text area during initial heap fill, placing real context nodes at very low heap addresses (as low as `HeapStart + 1`). After a reset (`pText = HeapStart`), `pText` eventually advances and overwrites those low-address contexts. The gentle reset cannot protect them because they are indistinguishable from text bytes at that heap position.
+
+2. **Lazy heal insufficient:** Multiple live contexts can share the same (now-overwritten) `iSuffix` target. The lazy `suff()` self-healing strategy (clear a stale pointer the first time it is traversed) can only heal one of those contexts per traversal step — a second accessor reaches the same corrupted address before it is cleared, causing an access violation.
+
+3. **Proactive BFS repair too complex:** Scanning all live contexts after each reset to clear stale `iSuffix` pointers proactively eliminated the access violations, but the added complexity (an O(N) BFS after every reset) made the code fragile and slow without addressing the root cause.
+
+**Outcome:** Abandoned after ~3 days. The root problem — low-address context nodes below `lim_cached_` that can be overwritten by `pText` after a text-area reset — would require restructuring the text-steal fallback in `AllocUnitsRare`, which is a high-risk change to the core allocator.
+
+**Current state:** `GentleRestoreModel` has been removed from the codebase. All memory exhaustions go directly to `RestoreModelRare`. The experiment is documented here for historical reference.
+
+---
+
+### Reset Pruning Order Experiment (March 2026)
+
+**Observation from the order-18 result above:** The full reset at 14 GB / order 25 fires at 68%, leaving 32% of enwik9 in a cold-start state. Order 18 delays the reset to 92% (only 8% cold-start) and produces 113 KB better compression — despite shallower context depth. The quality benefit of order 25's deeper contexts is smaller than the quality cost of the extra cold-start bytes.
+
+**Hypothesis:** If we keep order 25 for context-building, but limit `cutOff` *during the reset* to pruning only orders above 18, we preserve the order-0..18 subtree intact across the reset boundary. The trade-off:
+- Less memory freed per reset (only high-order contexts removed → fewer allocations reclaimed)
+- Potentially more frequent resets, since less headroom is recovered each time
+- Each reset causes less model degradation, since the shallow context tree survives
+
+**Implementation:** Changed O_BOUND to 18
+
+
+**Results (enwik9, 14 GB heap, order 25 + `_resetMaxOrder=18`):**
+
+| Metric | Order 25 (baseline) | **Order 18 (best)** | Order 25+cut18 |
+|--------|---------------------|---------------------|----------------|
+| Output bytes | 165,283,254 | **165,169,516** | 165,200,952 |
+| Delta vs order 25 | — | **−113,738 (−0.069%)** | −82,302 (−0.050%) |
+| Delta vs order 18 | — | — | +31,436 (+0.019%) |
+| Reset at | 68.19% | 92.19% | 68.19% |
+| Post-reset corpus | 31.8% | 7.8% | 31.8% |
+| End used | 70.8% | 43.4% | 81.7% |
+| Freed by reset | ~65% | ~56% (est) | ~18% |
+| Speed | ~261 KB/s | ~248 KB/s | ~247 KB/s |
+
+**End-of-compression heap stats:**
+```
+[heap-stats end-of-compression]
+  total:           14000 MB
+  used:            11442 MB  (81.7%)        ← above 75% threshold
+  to-threshold:        0 MB headroom
+  text-area:         243 MB / 875 MB cap  (27.9%)
+  ctx-hi-alloc:     8599 MB  (unchanged — same tree address range as order-25 baseline)
+  ctx-lo-alloc:     4919 MB  (unchanged)
+  free-list:        2320 MB  (31 non-empty buckets, all large >16u blocks)
+  frag-score:        0.0%
+  resets so far: 0 (hard) + 0 (gentle)     ← counter anomaly; progress line showed reset at 68.19%
+```
+
+**Analysis:**
+
+1. **Better than order-25 baseline, but does not beat pure order-18.** The experiment partially succeeds: preserving the order-0..18 subtree across the reset saves 82K bytes over the order-25 baseline. However, it is 31K bytes worse than simply running at order 18 from the start.
+
+2. **Reset timing is unchanged (68.19%).** Because the model builds order-25 contexts until exhaustion, memory fills at the same rate as the order-25 baseline. The `_resetMaxOrder` change only affects what `cutOff` discards *during* the reset — it does not move when the reset fires.
+
+3. **Very little memory freed (~18%).** Pruning only orders 19–25 removes a small fraction of the total context tree. End-of-compression usage is 81.7% — above the 75% threshold — meaning the model ran with only ~2.3 GB free headroom for the last 32% of input. No second reset fired; the 2,320 MB free-list was just sufficient to absorb new context allocations for the remaining corpus.
+
+4. **Why pure order-18 still wins: reset timing dominates context depth.** Both configurations have an effectively order-18 context tree after the reset. But pure order-18 delays the reset to 92.19%, so only 7.8% of the corpus suffers post-reset cold-start degradation. Order 25+cut18 still resets at 68.19%, leaving 31.8% post-reset — the same poor fraction as the plain order-25 baseline. The quality benefit of the preserved order-0..18 tree is real but too small to compensate for this reset-timing disadvantage.
+
+5. **Reset counter anomaly.** The progress line logged `reset` at 68.19%, but the final heap stats report `resets so far: 0 (hard) + 0 (gentle)`. The `_resetMaxOrder` path goes through `RestoreModelRare` but the hard-reset counter was not incremented, suggesting the counter is gated on the standard (full-pruning) code path and does not track the modified-cutoff call.
+
+**Conclusion:** `_resetMaxOrder = 18` is a partial improvement over the order-25 baseline but is not competitive with pure order-18. The experiment confirms that *when* the reset fires matters more than *what* is preserved during it. For enwik9 at 14 GB, **order 18 remains the best PPMd-only configuration** at 165,169,516 bytes. Future options: proactive reset at 80% fill (Option B) to reduce post-reset cold-start fraction while keeping order 25.
 
