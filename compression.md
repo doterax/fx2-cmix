@@ -1,5 +1,11 @@
 # Compression Ratio Improvement Research
 
+**Test machine:** Intel Core i7-10750H @ 2.60 GHz (Comet Lake, 14 nm, R0/R1, 6-core/12-thread, TDP 45 W) — single-core turbo 5.0 GHz, all-core turbo 4.3 GHz. SIMD: AVX2 + FMA3 (256-bit), no AVX-512. Cache: 6× 32 KB L1d + 6× 32 KB L1i, 6× 256 KB L2, 12 MB L3 (16-way, 64 B line). RAM: 64 GB DDR4-3200 dual-channel (2× Kingston 32 GB SO-DIMM, Micron dice, CL21-21-21-47-514, 2T, 1.2 V). GPU: NVIDIA GeForce RTX 3060 Laptop (PCIe 3.0, boost 1425 MHz core / 7001 MHz mem). Chipset: Intel HM470, UEFI.
+
+**Notes:**
+
+`powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c`
+
 ## Isolated LSTM Predictor
 
 **Goal:** Create an isolated LSTM predictor (`-p lstm`) that runs the LSTM byte mixer *without* the mixer ensemble, FXCM, or other bit-level models. This allows:
@@ -920,14 +926,15 @@ Isolated PPMd predictor (`-p ppmd no-preprocess`), 14000 MB heap, no dictionary.
 | enwik9 | 25 | 165,283,254 | 16.528% | 3825.2s | 261,426 | 9913 MB (70.8%) | 1 at 68% |
 | enwik9 | 22 | 165,288,589 | 16.529% | 3973.8s | 251,646 | 8455 MB (60.4%) | 1 at 74.5% |
 | enwik9 | 18 | 165,169,516 | 16.517% | 4028.7s | 248,219 | 6081 MB (43.4%) | 1 at 92.2% |
+| enwik9 | 17 | 165,217,871 | 16.522% | 3716.8s | 269,048 | 8477 MB (60.6%) | 1 at 99.9% |
 | enwik9 | 25+cut18 | 165,200,952 | 16.520% | 4042.1s | 247,396 | 11,442 MB (81.7%) | 1 at 68% |
 
 **Observations:**
 - **Enwik7 order 18 vs 25: +30 bytes (+0.001%)** — for small inputs the order makes zero difference in quality. Both use <250 MB of the 14 GB heap.
-- **Speed is ~246–261 KB/s** across all runs — within run-to-run noise.
+- **Speed is ~246–269 KB/s** across all runs — within run-to-run noise; shallower orders are slightly faster.
 - **Enwik9 ratio improves with larger input** (16.5% vs 20.8% for enwik8) — order 25 benefits from more context history on larger corpora.
-- **Enwik9 triggers 1 reset regardless of order** (25, 22, 18) — the tree fills all 14 GB for a 1 GB input at any practical order depth. However, the reset position shifts dramatically: order 18 fires at 92% vs order 25 at 68%.
-- **Order 18 produces the best output** — 165,169,516 bytes, **−113,738 bytes (−0.069%) better than order 25**. Later reset = only 8% of corpus compresses without full context history, vs 32% for order 25.
+- **Enwik9 triggers 1 reset regardless of order** (25, 22, 18, 17) — the tree fills all 14 GB for a 1 GB input at any practical order depth. However, the reset position shifts: order 17 fires at 99.9%, order 18 at 92%, order 25 at 68%.
+- **Order 18 produces the best output** — 165,169,516 bytes, **−113,738 bytes (−0.069%) better than order 25**. Order 17 delays the reset further (99.9%) but is worse than order 18 (+48,355 bytes) — context depth loss below order 18 outweighs the reset-timing gain. Order 18 is the sweet spot.
 - **Comparison to full predictor:** enwik8 full predictor (PPMd+LSTM+Bracket) achieves 14,962,810 bytes — 28% smaller than PPMd-only. Mixer/LSTM provide significant additional compression on top of PPMd.
 
 #### M1 Result: Neutral
@@ -1007,6 +1014,7 @@ Goal: process all 1 GB of enwik9 at order 25 without ever hitting allocation exh
 | 25 | 13999 MB (measured) | 68.19% | 70.8% | 165,283,254 | baseline |
 | 22 | 13999 MB (measured) | 74.53% | 60.4% | 165,288,589 | +0.003% |
 | 18 | 13999 MB (measured) | 92.19% | 43.4% | **165,169,516** | **−0.069%** ✓ best |
+| 17 | 13999 MB (measured) | 99.92% | 60.6% | 165,217,871 | −0.040% |
 | — | enwik7 order 25 | no reset | 1.8% | 2,284,952 | baseline |
 | — | enwik7 order 18 | no reset | 1.6% | 2,284,922 | −0.001% |
 
@@ -1085,6 +1093,30 @@ Currently `cutOff(MaxContext, 0, _MaxOrder)` keeps contexts up to max order. Pas
 4. **End-of-compression used: only 43.4%** (6081 MB of 14000 MB) — more than half the heap is unused at completion. The tree never had time to densify after the reset. This confirms order 18 with 14 GB is significantly over-provisioned.
 
 5. **Fragmentation model confirmed**: frag-score drops from 92.2% (immediately after reset) to 15.5% at end of compression — same healing pattern as order 25.
+
+#### Order 17 Result (14 GB heap, enwik9) — Confirms order 18 is the sweet spot
+
+| Metric | Order 25 | Order 18 (best) | Order 17 |
+|--------|----------|-----------------|----------|
+| Output bytes | 165,283,254 | **165,169,516** | 165,217,871 |
+| Delta vs order 25 | — | **−113,738 (−0.069%)** | −65,383 (−0.040%) |
+| Delta vs order 18 | — | — | +48,355 (+0.029%) |
+| Reset at | 68.19% | 92.19% | **99.92%** |
+| Post-reset corpus | 31.8% | 7.8% | **0.08%** |
+| End used | 70.8% | 43.4% | 60.6% |
+| Speed | ~261 KB/s | ~248 KB/s | ~269 KB/s |
+
+**Key findings:**
+
+1. **Order 17 almost entirely eliminates the post-reset cold-start** — reset fires at 99.92%, leaving only 0.08% (800 KB) of enwik9 processed post-reset. This is effectively zero cold-start penalty.
+
+2. **Yet order 17 is worse than order 18** (+48,355 bytes). This definitively shows the crossover point: below order 18, the context depth loss from shallower n-grams outweighs the reset-timing benefit. The shallow tree produces materially weaker predictions even without any cold-start penalty.
+
+3. **Order 18 is the sweet spot.** It retains enough context depth to be competitive with order 25 on the healthy part of the corpus (92%), while reducing cold-start to only 7.8%. Order 17 trades too much context depth to gain that last 7.8%.
+
+4. **End heap higher than order 18 (60.6% vs 43.4%).** At order 17, after the reset fires at 99.92%, the model only has 800 KB of remaining input to rebuild the tree — so the tree is still partially fragmented at completion (86.7% frag-score, 291M small free blocks). This is expected: there's no time to densify.
+
+5. **Slightly faster** (~269 KB/s vs ~248 KB/s for order 18) — marginal, within noise range, due to shallower tree traversal.
 
 **Implication for gentle reset:** Order 18 sets the quality bar at 165,169,516. A gentle reset on order 25 needs to do better than this. If it can defer/eliminate the reset on order 25 such that <8% of the corpus is processed post-reset (or with graceful degradation), it should beat order 18.
 
