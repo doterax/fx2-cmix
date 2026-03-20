@@ -514,8 +514,8 @@ struct ppmd_Model {
   void InitSubAllocator() {
     memset(BList, 0, sizeof(BList)); // Clear free list buckets
     HiUnit     = (pText = HeapStart) + SubAllocatorSize;
-    qword Diff = SubAllocatorSize / 8 / UNIT_SIZE * 7 *
-                 UNIT_SIZE; // 7/8 of heap for contexts
+    qword Diff = SubAllocatorSize / 16 / UNIT_SIZE * 15 *
+                 UNIT_SIZE; // 15/16 of heap for contexts (M1: text area 1/16)
     LoUnit = UnitsStart = HiUnit - Diff;
     // Capture the initial UnitsStart as a fixed baseline for pointer/index
     // conversions so indices remain stable even if UnitsStart moves.
