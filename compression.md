@@ -8,6 +8,8 @@
 
 ## Isolated LSTM Predictor
 
+`-p lstm compress -d .\dictionary\english.dic .\prof_input\input .\res.bin`
+
 **Goal:** Create an isolated LSTM predictor (`-p lstm`) that runs the LSTM byte mixer *without* the mixer ensemble, FXCM, or other bit-level models. This allows:
 - Direct measurement of LSTM contribution in isolation
 - Fast iteration on LSTM hyperparameters (cells, layers, horizon, LR) without 461-model overhead  
@@ -127,6 +129,8 @@ The byte class context helps most on enwik7 (-4,046 bytes absolute) because with
 **Diminishing returns from mixer contexts alone:** Going from 1→8→40 mixers improved input by only 216 bytes total (3.5%). The remaining 1,211-byte gap to the full predictor requires fundamentally different model signals (word boundaries, XML structure, match models, etc.), not more mixer contexts. To improve further, we need to enrich the model inputs rather than the mixer topology.
 
 ### MixPredictor — Extensible multi-model predictor (`-p mix`)
+
+`.\cmix.exe -p mix compress -d .\dictionary\english.dic .\prof_input\input .\res.bin`
 
 Adds new model inputs alongside PPMd+LSTM, blended by an N-input context-indexed micro-mixer. Designed for easy addition of further models.
 
@@ -422,6 +426,100 @@ The 6-byte difference (6,147 → 6,141) is random seed noise — the LSTM weight
 **Opens the door to more complex LSTM configs:** With SIMD, the compute for a second layer is also vectorized. The 128×2 LSTM experiment (T1-1 in Improvement Opportunities) was previously estimated at 1.16× slower than 200×1 scalar. That estimate should be re-measured with Eigen — the absolute time increase for a second layer may now be smaller than the pre-SIMD estimate.
 
 **Note:** The speed measurements in earlier experiment tables (ByteMixer v1–v5, MixPredictor v1–v6) were all on scalar code. Speeds of ~13,000–14,000 B/s in those tables will be approximately 2.4× higher with Eigen on the same hardware.
+
+---
+
+## LSTM Cache Sizing Analysis (March 2026)
+
+### Architecture recap (H=200, V≈205)
+
+The LSTM is a single-layer coupled-gate model (no separate input gate; `i = 1 − f`). Three `NeuronLayer` objects (forget, input, output gates), each with a fused weight matrix:
+
+| Matrix | Shape | Meaning |
+|--------|-------|---------|
+| `weights_` | H × (2V+401) | fused W_embed ‖ W_aux ‖ U_rec ‖ U_prev ‖ bias_col |
+| `update_`, `m_`, `v_` | same | Adam gradient accumulators |
+| `gamma_`, `beta_` | H | LayerNorm scale + bias |
+| `output_layer_[t]` | (H+1) × V | per-timestep output projection (circular buffer, depth 128) |
+
+Column layout of `weights_(H, 2V+401)`:
+
+| Cols | Width | Role |
+|------|-------|------|
+| `[0..V-1]` | V | embedding for discrete symbol |
+| `[V..2V-1]` | V | continuous PPMd input |
+| `[2V..2V+H-1]` | H | recurrent weights U_rec |
+| `[2V+H..2V+2H-1]` | H | inter-layer weights U_prev (zeros: only 1 layer) |
+| `[2V+2H]` | 1 | bias column (input always = 1.0) |
+
+The forward GEMV is `weights_.middleCols(V, V+2H+1) * input` — columns [V..2V+2H], which is **contiguous in Eigen column-major layout** → fully vectorizable.
+
+Dead code removed (March 2026): `recurrent_weights_` (H × (2H+1) per gate, 963 KB total across 3 gates) was allocated and initialized but never read in any GEMV path. Removed.
+
+### SIMD alignment analysis
+
+AVX2 requires **32-byte alignment** (8 floats) for full-width aligned loads. For a column-major Eigen matrix of shape (R, C), Eigen aligns the base pointer to 32 bytes. Column `k` starts at byte offset `k × R × 4`. For every column to be 32-byte aligned: `k × R × 4 ≡ 0 (mod 32)` for all k → **R must be a multiple of 8**.
+
+| Matrix | Shape | Row count R | R % 8 | Status |
+|--------|-------|-------------|-------|--------|
+| `weights_` (NeuronLayer, each gate) | H × (2V+401) | 200 | **0** | ✓ aligned |
+| `update_`, `m_`, `v_` | H × (2V+401) | 200 | **0** | ✓ aligned |
+| `output_layer_[t]` | (H+1) × V | **201** | **1** | minor — 1-float tail |
+
+**`weights_` gate matrices — already fully aligned:** H=200 gives column stride 200×4 = 800 bytes, 800 % 32 = 0. Every column of every gate matrix lands on a 32-byte boundary → AVX2 loads are always fully aligned. ✓
+
+**`output_layer_[t]` — minor misalignment:** H+1=201 rows gives column stride 804 bytes, 804 % 32 = 4. Eigen handles the 1-float tail with a scalar epilogue: 25 AVX2 loads (200 floats) + 1 scalar per column in the GEMV. Overhead is 1 scalar multiply per output class per step — negligible.
+
+**Padding `output_layer_` to 208 rows is counter-productive (benchmarked):** The 7 extra rows add real work to every rank-1 update (`hidden_ * errors.T`: 208×205 instead of 201×205; extra rows are zero but Eigen doesn't skip them) and to the GEMV (`output_layer_.T × hidden_`: 208-length dot products instead of 201). Result: **13s → 16s slowdown** on the input corpus (23% regression). Not applied.
+
+**The H % 8 = 0 constraint for `weights_` alignment** is naturally satisfied by all practical H values: 200 (25×8), 256 (32×8), 320 (40×8), 360 (45×8). H=300 would break this — avoid.
+
+### Hot working set per timestep
+
+**Forward pass** (everything touched to produce one predicted byte):
+
+| Data | Size at H=200, V=205 |
+|------|----------------------|
+| 3× gate `middleCols(V, V+401)`: live columns only | 3 × 200×606×4 B = **1.46 MB** |
+| 3× embedding column lookup (1 col each) | 3 × 800 B = ~2.4 KB |
+| `output_layer_[current_epoch]` | 201×205×4 B = **165 KB** |
+| Hidden state, gate outputs, input vector | ~10 KB |
+| **Total forward hot set** | **≈ 1.6 MB → L3** |
+
+The forward pass fits in 12 MB L3 with large margin. It is **L3-bandwidth-bound**.
+
+**BPTT backward pass** (depth 128, runs every step):
+
+| Data | Size |
+|------|------|
+| 3 gates × 4 Adam matrices (weights/m/v/update) | 3 × 4 × 200×811×4 B = **7.8 MB** |
+| `output_layer_[0..127]` full circular buffer | 128 × 201×205×4 B = **21 MB** |
+| `state_`, `norm_` histories | 3 × 2 × 128×200×4 B = 614 KB |
+| **Total BPTT hot set** | **≈ 30 MB → DRAM** |
+
+The BPTT pass is **DRAM-bandwidth-bound** regardless of H, dominated by the 21 MB `output_layer_` history buffer. This is fundamental to the horizon-128 BPTT design.
+
+### Cache threshold vs H
+
+Forward hot set ≈ `H × (3×(V+2H+1) + (H+1)) × 4 B`. For V=205, dominant term: **H × 8,096 B ≈ 7.9H KB**.
+
+| H | Forward hot | Cache tier | Note |
+|---|-------------|------------|------|
+| 32 | 252 KB | L2 (1.5 MB) | Barely fits — too weak for quality |
+| 108 | 850 KB | L2/L3 boundary | |
+| **200** | **1.6 MB** | **L3** ✓ | current |
+| 256 | 2.1 MB | L3 ✓ | +28% params, AVX2-aligned |
+| 320 | 2.5 MB | L3 ✓ | |
+| 360 | 2.9 MB | L3 ✓ | ~47h est. |
+| 1200 | 9.7 MB | L3 near limit | |
+| **>1500** | **>12 MB** | **DRAM cliff** | cache eviction begins |
+
+**Conclusions:**
+- The L2→L3 transition happened long before H=200. Getting into L2 would require H ≤ 32 — impractical.
+- The cache does **not** constrain H in any meaningful way up to H ≈ 1200.
+- Between H=200 and H=1200, forward-pass time scales **linearly** with H (same bandwidth tier, no step change).
+- The real constraint is the **50h Hutter Prize time budget**. At 26h for H=200, that allows roughly H=360 max (≈ 47h).
+- **Best upgrade target: H=256** — +28% capacity, ~33h estimate, clean AVX2 alignment (32×8), stays well within L3.
 
 ---
 
