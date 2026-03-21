@@ -114,8 +114,10 @@ void ReadHeader(std::ifstream *is, unsigned long long *length,
 std::unique_ptr<IPredictor> CreateFullPredictor(const std::vector<bool> &vocab,
                                                 int ppmd_order, int ppmd_mb,
                                                 int lstm_bptt_depth,
-                                                int lstm_bptt_period) {
-  return std::make_unique<Predictor>(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth, lstm_bptt_period);
+                                                int lstm_bptt_period,
+                                                int lstm_cells,
+                                                int lstm_layers) {
+  return std::make_unique<Predictor>(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth, lstm_bptt_period, lstm_cells, lstm_layers);
 }
 
 std::unique_ptr<IPredictor> CreatePPMdPredictor(const std::vector<bool> &vocab,
@@ -161,7 +163,7 @@ std::unique_ptr<IPredictor> CreatePredictor(const std::vector<bool> &vocab,
                                             int lstm_cells,
                                             int lstm_layers) {
   if (type == EPredictorType::FULL) {
-    return CreateFullPredictor(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth, lstm_bptt_period);
+    return CreateFullPredictor(vocab, ppmd_order, ppmd_mb, lstm_bptt_depth, lstm_bptt_period, lstm_cells, lstm_layers);
   } else if (type == EPredictorType::PPMD_ONLY) {
     return CreatePPMdPredictor(vocab, ppmd_order, ppmd_mb);
   } else if (type == EPredictorType::GENERIC) {
@@ -517,12 +519,12 @@ int main(int argc, char **argv) {
       ->check(CLI::Range(1, 128));
 
   int lstm_cells = 200;
-  app.add_option("--lstm-cells", lstm_cells,
-                 "LSTM hidden cells (default: 200)")
+  app.add_option("--lstm-num-cells", lstm_cells,
+                 "LSTM hidden cells (default: 200, must be multiple of 8)")
       ->check(CLI::Range(16, 1024));
 
   int lstm_layers = 1;
-  app.add_option("--lstm-layers", lstm_layers,
+  app.add_option("--lstm-num-layers", lstm_layers,
                  "LSTM layers (default: 1)")
       ->check(CLI::Range(1, 4));
 
@@ -653,6 +655,12 @@ int main(int argc, char **argv) {
   }
   if (lstm_bptt_period > 1) {
     printf("Using LSTM BPTT period: %d\n", lstm_bptt_period);
+  }
+  if (lstm_cells % 8 != 0) {
+    int suggested = (lstm_cells + 7) & ~7;
+    printf("WARNING: --lstm-num-cells=%d is not a multiple of 8. "
+           "weights_ column stride = %d bytes, not 32-byte aligned for AVX2. "
+           "Suggested value: %d\n", lstm_cells, lstm_cells * 4, suggested);
   }
 
   clock_t start             = clock();
