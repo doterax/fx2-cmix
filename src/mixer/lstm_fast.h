@@ -82,7 +82,6 @@ class LstmFast : public NMixer {
   std::vector<Layer>              layers_;
   std::vector<Eigen::MatrixXf>    layer_inputs_;   // [num_layers] (dim, H)
   std::vector<uint8_t>            input_history_;  // (H)
-  Eigen::MatrixXf                 output_history_; // (output_size, H)
 
   Eigen::VectorXf hidden_, hidden_error_;
   Eigen::MatrixXf output_layer_;                   // (num_layers*C+1, output_size)

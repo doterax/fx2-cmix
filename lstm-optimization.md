@@ -255,7 +255,72 @@ speedup by cutting store traffic in half.
   rank-1 update `output_layer_ -= hidden * errors.T` benefits from it too.
 - Multi-layer path: fuse `hidden_error` propagation across layers using a
   single batched GEMV across stacked gate errors.
-- Drop `output_history_` and compute it on the fly; the softmax output is
-  only needed during the current step's return value + during BPTT. Storing
-  one V-sized vector per horizon is 128 KB of cold data per layer.
+- ~~Drop `output_history_` and compute it on the fly~~ — **done**, see the
+  "April 2026 — drop `output_history_`" section below.
+
+## April 2026 — drop `output_history_` (integrated in full predictor)
+
+Context: VTune hotspots on `cmix.exe no-preprocess input2` (full predictor,
+[vtune_cmix_input2_findings.md](vtune_cmix_input2_findings.md)) showed the
+LSTM path still spending ~52 % of total CPU time inside Eigen SIMD. The
+cheapest remaining handle from this doc's "Potential future work" was
+dropping the `output_history_` matrix.
+
+### What changed
+
+Commit touches [src/mixer/lstm_fast.hpp](src/mixer/lstm_fast.hpp) and
+[src/mixer/lstm_fast.h](src/mixer/lstm_fast.h):
+
+- Move the per-bit `errors = (output_current_ − onehot(input)) · lr`
+  computation plus the `errors_ring_.col(epoch_) = errors` store to
+  *before* BPTT (safe — BPTT's rank-1 correction loop only reads columns
+  `k > epoch`, so writing `col(epoch_)` first doesn't corrupt the
+  reconstruction).
+- Replace the BPTT body's `Eigen::VectorXf errors_vec = output_history_.col(epoch);
+  errors_vec[input_history_[epoch]] -= 1.0f;` with
+  `errors_ring_.col((epoch + 1) mod H) / lr` — the same quantity we just
+  stashed, only scaled by `lr`.
+- Remove the `output_history_` member field and the `Predict()` store
+  `output_history_.col(epoch_) = output_current_`.
+- Initialize `errors_ring_` at construction to
+  `(1/V · ones − onehot(0)) · lr` across all columns to match the uniform
+  prior the old code implied via `output_history_ = Constant(1/V)`.
+
+Savings per bit:
+- One (V = 256) float store into `output_history_`.
+- One per-epoch read of `output_history_.col(epoch)` in BPTT
+  (replaced by a cheaper scaled read of `errors_ring_`).
+- 128 KB of live working set per LSTM (the entire `output_history_` matrix).
+
+### Measured effect in full predictor
+
+Workload: `cmix.exe no-preprocess prof_input/input2` (941 724 B).
+
+| Build                           | Total CPU  | Output size | Ratio     |
+| ------------------------------- | ---------: | ----------: | --------: |
+| v2 (pre-change baseline)        |   204.66 s |   181 036 B | 19.2239 % |
+| v4 (drop `output_history_`)     | **202.57 s** |   181 025 B | **19.2227 %** |
+
+−2.1 s total CPU (~1 %) on the full predictor, **compression marginally
+improved** (181 036 → 181 025 B). The 11-byte change comes from float
+reassociation drift — the BPTT error path now reads `errors_ring_ / lr`
+instead of reconstructing from the softmax output; same algorithmic
+content, different rounding order (identical to the `-ffast-math` noise
+we already live with).
+
+VTune result dir: [vtune_results/cmix_input2_v4](vtune_results/cmix_input2_v4).
+
+### Numerical note
+
+`errors_ring_ / lr == (hist − onehot)` exactly in real arithmetic, so the
+algorithm is unchanged. In float the operations are:
+
+- Old: `load hist col → subtract 1 from input slot → dot with W` per bit.
+- New: `load errors_ring col → multiply by 1/lr → dot with W` per bit.
+
+Both are dominated by the same `256 × 201` GEMV; the extra `* (1/lr)` is
+one vector multiply folded with the load. The reassociation is safe for
+stability (none of the values saturate; `lr = 3e-5` so `1/lr ≈ 3.3e4` is
+well-scaled for float32 and the BPTT inputs stay in `[−1, 1]`).
+
 

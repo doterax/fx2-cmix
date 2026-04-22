@@ -67,9 +67,16 @@ inline LstmFast::LstmFast(unsigned int input_size, unsigned int output_size,
   hidden_error_ = Eigen::VectorXf::Zero(num_cells_);
   output_layer_ = Eigen::MatrixXf::Zero(num_cells_ * num_layers_ + 1, output_size_);
   output_current_ = Eigen::VectorXf::Constant(output_size_, 1.0f / output_size_);
-  output_history_ = Eigen::MatrixXf::Constant(output_size_, H, 1.0f / output_size_);
   hidden_ring_  = Eigen::MatrixXf::Zero(num_cells_ * num_layers_ + 1, H);
-  errors_ring_  = Eigen::MatrixXf::Zero(output_size_, H);
+  // errors_ring_ column k encodes (output_history_.col(k-1 mod H) -
+  // onehot(input_history_[k-1 mod H])) * learning_rate_. In the original
+  // startup state output_history_ was uniform 1/V and input_history_ was 0,
+  // so the equivalent initial value is (1/V * ones - onehot(0)) * lr for
+  // every column. This keeps warm-up behaviour bit-compatible with the
+  // old output_history_-based code.
+  errors_ring_  = Eigen::MatrixXf::Constant(output_size_, H,
+                                            learning_rate_ / output_size_);
+  errors_ring_.row(0).array() -= learning_rate_;
 
   layer_inputs_.resize(num_layers_);
   for (unsigned int l = 0; l < num_layers_; ++l) {
@@ -313,6 +320,19 @@ inline Eigen::VectorXf& LstmFast::Perceive(unsigned int input) {
   int old_input = input_history_[last_epoch];
   input_history_[last_epoch] = static_cast<uint8_t>(input);
 
+  // Compute the rank-1 errors for the last Predict (whose result is still in
+  // output_current_) and stash them into errors_ring_ BEFORE BPTT runs.
+  // This lets BPTT reconstruct `output_history_.col(epoch) -
+  // onehot(input_history_[epoch])` as `errors_ring_.col((epoch+1) mod H) /
+  // learning_rate_`, eliminating the per-bit 256-float store into a separate
+  // output_history_ matrix. The BPTT rank-1 correction loop reads
+  // errors_ring_.col(k) only for k>epoch (k >= 1), so writing col(epoch_)=0
+  // early is safe.
+  Eigen::VectorXf errors = output_current_;
+  errors[input] -= 1.0f;
+  errors *= learning_rate_;
+  errors_ring_.col(epoch_) = errors;
+
   if (epoch_ == 0 && ++bptt_cycle_ >= bptt_period_) {
     bptt_cycle_ = 0;
     const int bptt_start = H - bptt_depth_;
@@ -325,10 +345,15 @@ inline Eigen::VectorXf& LstmFast::Perceive(unsigned int input) {
       L.W_update.setZero();
     }
 
+    const float inv_lr = 1.0f / learning_rate_;
+
     for (int epoch = H - 1; epoch >= bptt_start; --epoch) {
       // errors_vec is shared by all layers at this epoch.
-      Eigen::VectorXf errors_vec = output_history_.col(epoch);
-      errors_vec[input_history_[epoch]] -= 1.0f;
+      // errors_ring_.col(k) stores (hist[k-1] - onehot(input_history_[k-1]))
+      // * lr; so for timestep `epoch` we need column (epoch+1) mod H.
+      int ring_idx = epoch + 1;
+      if (ring_idx == H) ring_idx = 0;
+      Eigen::VectorXf errors_vec = errors_ring_.col(ring_idx) * inv_lr;
 
       // Reconstruct `slot[epoch] * errors_vec` for the full hidden-range at
       // once, then each layer reads its own segment. See note in the header:
@@ -358,15 +383,9 @@ inline Eigen::VectorXf& LstmFast::Perceive(unsigned int input) {
   }
 
   // Output-layer rank-1 update (single live matrix, no per-epoch snapshot).
-  Eigen::VectorXf errors = output_history_.col(last_epoch);
-  errors[input] -= 1.0f;
-  errors *= learning_rate_;
-
-  // Record the rank-1 update into the ring for later BPTT reconstruction,
-  // keyed by the slot being written (the current epoch_).
+  // `errors` and `errors_ring_.col(epoch_)` were already computed above,
+  // before BPTT; reuse them here.
   hidden_ring_.col(epoch_) = hidden_;
-  errors_ring_.col(epoch_) = errors;
-
   output_layer_.noalias() -= hidden_ * errors.transpose();
 
   return Predict(input);
@@ -397,8 +416,8 @@ inline Eigen::VectorXf& LstmFast::Predict(unsigned int input) {
   output_current_.array() = (output_current_.array() - mx).exp();
   output_current_ /= output_current_.sum();
 
-  // Persist this step's output distribution for BPTT.
-  output_history_.col(epoch_) = output_current_;
+  // output_history_ is no longer persisted here; Perceive reconstructs past
+  // per-epoch errors from errors_ring_ instead (see comment in Perceive).
 
   ++epoch_;
   if (epoch_ == horizon_) epoch_ = 0;
