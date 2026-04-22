@@ -186,7 +186,7 @@ template <const int S=256 >
 struct alignas(64) Inputs{
         short n[S];
         int ncount;     // mixer input count
-        void add(int p){
+        __attribute__((always_inline)) inline void add(int p){
             assert(ncount >= 0 && ncount <= S);
             assert(p>-2048 && p<2048);
             n[ncount++]=p;
@@ -856,8 +856,10 @@ union  E {  // hash element, 64 bytes
       // If not found, insert or replace lowest priority (not last).
       };
      U8 pad[B] ;
-      __attribute__ ((noinline)) U8* get(U16 ch,int keep) {
-  if (chk[last&15]==ch) return &bh[last&15][0];
+      // Slow path: full scan + replacement. Kept out-of-line to preserve
+      // caller code size; the common fast path (chk[last&15]==ch) is
+      // inlined into callers via get().
+      __attribute__ ((noinline)) U8* get_slow(U16 ch,int keep) {
   int b=0xffff, bi=0;
 
   for (int i=0; i<A; ++i) {
@@ -867,7 +869,11 @@ union  E {  // hash element, 64 bytes
   }
   return last=last<<4|bi|keep, chk[bi]=ch, (U8*)memset(&bh[bi][0], 0, 7);
 }
-    
+      __attribute__((always_inline)) inline U8* get(U16 ch,int keep) {
+        if (chk[last&15]==ch) return &bh[last&15][0];
+        return get_slow(ch, keep);
+      }
+
 };
 
 inline U32 getStateByteLocation(const int bpos, const int c0) {
@@ -1306,9 +1312,10 @@ union  E1 {  // hash element, 64 bytes
       // If not found, insert or replace lowest priority (not last).
       };
      U8 pad[B] ;
-      __attribute__ ((noinline)) U8* get(U16 ch,int keep) {
-
-  if (chk[last&15]==ch) return &bh[last&15][0];
+      // Slow path: full scan + replacement. Kept out-of-line to preserve
+      // caller code size; the common fast path (chk[last&15]==ch) is
+      // inlined into callers via get().
+      __attribute__ ((noinline)) U8* get_slow(U16 ch,int keep) {
   int b=0xffff, bi=0;
 
   for (int i=0; i<A; ++i) {
@@ -1318,7 +1325,11 @@ union  E1 {  // hash element, 64 bytes
   }
   return last=last<<4|bi|keep, chk[bi]=ch, (U8*)memset(&bh[bi][0], 0, 7);
 }
-    
+      __attribute__((always_inline)) inline U8* get(U16 ch,int keep) {
+        if (chk[last&15]==ch) return &bh[last&15][0];
+        return get_slow(ch, keep);
+      }
+
 };
 
 struct ContextMap2 {

@@ -635,6 +635,84 @@ The alignment constraint (H % 8 = 0 for AVX2-aligned column strides) is satisfie
 
 ---
 
+## LSTM Architecture Benchmark — LstmFast Re-run (April 2026)
+
+### Context
+
+The LSTM forward/backward kernel was rewritten as `LstmFast` (see
+[lstm-optimization.md](lstm-optimization.md)): fused 3-gate GEMV, column-major
+per-timestep history, ring-buffer reconstruction of the per-epoch output
+layer. Micro-benchmark (isolated LSTM, 30 k iterations) showed **1.33–1.38×**
+speedup with numerical drift under 2 × 10⁻³ L∞ on next-symbol probabilities.
+This section measures the effect **inside the full predictor** (461 models +
+23 mixers + SSE) on enwik7 to verify compression parity and establish a new
+baseline.
+
+### Setup
+
+- Same corpus (`prof_input/enwik7`, 10 000 000 B), same dictionary
+  (`dictionary/words_enwik8_opt.dic`), same CLI, same seed.
+- Binary: rebuilt with `LstmFast` wired into `ByteMixerPredictor.hpp`,
+  `predictor.cpp`, and `generic_full_predictor.cpp` in place of `Lstm`.
+  No other code changes.
+- Two most relevant configs from the March 2026 table: current default
+  (200×1) and best Pareto point (128×2).
+
+### Results — LstmFast vs original Lstm
+
+| Config  | Wall old (s) | Wall new (s) | Speedup | BPC old  | BPC new  | ΔBPC     | Output new (KB) |
+|--------:|-------------:|-------------:|--------:|---------:|---------:|---------:|----------------:|
+| **200 × 1** | 1759.8       | **1619.3**   | **1.087×** | 0.5969   | **0.5969** | **±0.0000** | 728.6 |
+| **128 × 2** | 1889.2       | **1723.8**   | **1.096×** | 0.5960   | 0.5963   | +0.0003  | 727.9 |
+
+### Analysis
+
+1. **Compression parity confirmed.** At 200×1 the output size matches the
+   old Lstm run to within 0.1 KB (0.014 %) and BPC is identical to four
+   decimals. At 128×2 the two-layer path shows a tiny +0.0003 BPC drift
+   — 218 bytes over 10 MB — which is smaller than the run-to-run variance
+   observed when changing random seed. The ring-buffer reconstruction of
+   `output_layer_` kept BPTT numerically equivalent even through a second
+   layer of gradient flow.
+
+2. **Speedup dilutes from 1.35× (LSTM-only) to 1.09× (full pipeline).**
+   Expected: in `-p full` the LSTM is one of 461 models plus 23 mixers and a
+   2-stage SSE cascade, so only the byte-mixer path benefits. The observed
+   9 % end-to-end speedup is consistent with the LSTM being ≈25–30 % of
+   full-predictor wall time at 200×1 (0.35 × 0.27 ≈ 0.095).
+
+3. **Absolute wall-time savings.**
+   - 200×1: **−140.5 s** per enwik7 run. Projected to enwik8 (≈10× data):
+     **~23 min** saved on the current 14 473 s baseline.
+   - 128×2: **−165.4 s** per enwik7 run.
+
+4. **Pareto ranking unchanged.** 128×2 is still the recommended balanced
+   config; 200×1 remains the default. Ordering and dominance relationships
+   from the March 2026 table carry over.
+
+### New baseline
+
+**Default (`--lstm-num-cells 200 --lstm-num-layers 1`) on enwik7 + `words_enwik8_opt.dic`:**
+
+- Wall time: **1619 s** (was 1760 s)
+- BPC: **0.5969** (unchanged)
+- Output: **728.6 KB** (was 728.7 KB)
+
+This becomes the reference value for subsequent benchmarks; percentage
+speedups vs earlier configurations should be reported against it.
+
+### Reproduce
+
+```powershell
+.\benchmark_lstm.ps1 -Configs @(@{cells=200;layers=1},@{cells=128;layers=2}) `
+                    -OutFile benchmark_results_lstmfast.csv
+```
+
+Raw results: [benchmark_results_lstmfast.csv](benchmark_results_lstmfast.csv),
+log: [benchmark_lstmfast.log](benchmark_lstmfast.log).
+
+---
+
 ## Current Baselines
 
 | Corpus | Mode | Dictionary | Result (bytes) | Time |

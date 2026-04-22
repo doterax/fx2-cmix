@@ -2,7 +2,7 @@
 #define BYTE_MIXER_PREDICTOR_HPP
 
 #include "IPredictor.h"
-#include "mixer/lstm.h"
+#include "mixer/lstm_fast.h"
 #include "models/ppmd.h"
 #include <Eigen/Core>
 #include <cmath>
@@ -91,9 +91,9 @@ public:
 
     ppmd_ = std::make_unique<PPMD::PPMD>(ppmd_order, ppmd_mb, bit_context_, vocab_);
 
-    lstm_ = std::make_unique<Lstm>(vocab_size_, vocab_size_, lstm_cells,
-                                   lstm_layers, horizon, learning_rate,
-                                   gradient_clip, bptt_depth, bptt_period);
+    lstm_ = std::make_unique<LstmFast>(vocab_size_, vocab_size_, lstm_cells,
+                                       lstm_layers, horizon, learning_rate,
+                                       gradient_clip, bptt_depth, bptt_period);
 
     lstm_input_ = Eigen::VectorXf::Zero(vocab_size_);
   }
@@ -174,7 +174,7 @@ private:
   Eigen::VectorXi byte_map_;
   unsigned int vocab_size_;
   std::unique_ptr<PPMD::PPMD> ppmd_;
-  std::unique_ptr<Lstm> lstm_;
+  std::unique_ptr<LstmFast> lstm_;
   MicroMixer mixers_[kNumMixers];
   float last_mix_p_;
 };

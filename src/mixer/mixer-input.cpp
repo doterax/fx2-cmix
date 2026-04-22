@@ -7,26 +7,3 @@ MixerInput::MixerInput(const Sigmoid& sigmoid, float eps) :
 void MixerInput::SetNumModels(int num_models) {
   inputs_ = Eigen::VectorXf::Constant(num_models, 0.5);
 }
-
-void MixerInput::SetInput(int index, float p) {
-  if (p < min_) p = min_;
-  else if (p > max_) p = max_;
-  inputs_[index] = sigmoid_.Logit(p);
-}
-
-void MixerInput::SetStretchedInput(int index, float p) {
-  if (p > stretched_max_) p = stretched_max_;
-  else if (p < stretched_min_) p = stretched_min_;
-  inputs_[index] = p;
-}
-void MixerInput::SetZero(int index) {
-  
-  inputs_[index] = 0.0f;
-}
-
-void MixerInput::SetExtraInput(size_t index, float p) {
-  if (p > stretched_max_) p = stretched_max_;
-  else if (p < stretched_min_) p = stretched_min_;
-  extra_inputs_[index] = p;
-}
-

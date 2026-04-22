@@ -4,16 +4,24 @@
 #include "sigmoid.h"
 
 #include <Eigen/Core>
+#include <algorithm>
 #include <vector>
 
 class MixerInput {
  public:
   MixerInput(const Sigmoid& sigmoid, float eps);
   void SetNumModels(int num_models);
-  void SetInput(int index, float p);
-  void SetStretchedInput(int index, float p);
-  void SetZero(int index);
-  void SetExtraInput(size_t index, float p);
+  inline void SetInput(int index, float p) {
+    p = std::min(std::max(p, min_), max_);
+    inputs_[index] = sigmoid_.Logit(p);
+  }
+  inline void SetStretchedInput(int index, float p) {
+    inputs_[index] = std::min(std::max(p, stretched_min_), stretched_max_);
+  }
+  inline void SetZero(int index) { inputs_[index] = 0.0f; }
+  inline void SetExtraInput(size_t index, float p) {
+    extra_inputs_[index] = std::min(std::max(p, stretched_min_), stretched_max_);
+  }
   void SetExtraInputSize(size_t size) { extra_inputs_.resize(size);};
   //void ClearExtraInputs() { extra_inputs_.clear(); }
   const Eigen::VectorXf& Inputs() const { return inputs_; }

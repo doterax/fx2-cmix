@@ -10,7 +10,7 @@
 #include "contexts/interval.h"
 #include "contexts/sparse.h"
 #include "mixer/byte-mixer.h"
-#include "mixer/lstm.h"
+#include "mixer/lstm_fast.h"
 #include "mixer/mixer-input.h"
 #include "mixer/mixer.h"
 #include "mixer/sigmoid.h"
