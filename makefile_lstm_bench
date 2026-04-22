@@ -1,0 +1,131 @@
+# Dedicated makefile to build the LSTM benchmark (Lstm vs LstmFast).
+#
+# Usage:
+#   make -f makefile_lstm_bench            # build out/lstm_bench
+#   make -f makefile_lstm_bench run        # build and run default config
+#   make -f makefile_lstm_bench perf       # run under `perf stat -d`
+#   make -f makefile_lstm_bench clean
+#
+# Same optimization flags as the main "fast" section of the project makefile.
+
+CC      := clang++
+ROOT    := $(shell pwd)
+OUT_DIR := out
+
+CXXFLAGS := -DUPDATE_LIMIT=3000 \
+            -m64 -std=c++17 -Wall \
+            -fno-threadsafe-statics \
+            -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format \
+            -Ithird_party -Isrc \
+            -DEIGEN_NO_DEBUG -DEIGEN_FAST_MATH=1 \
+            -DEIGEN_UNROLLING_LIMIT=100 -DNDEBUG \
+            -O3 -ffast-math -fno-finite-math-only \
+            -fvectorize -fslp-vectorize -funroll-loops \
+            -fomit-frame-pointer -falign-functions=32
+
+# Allow arch override, default to native.
+ifdef COREI7
+  CXXFLAGS += -march=corei7
+else ifdef ZEN2
+  CXXFLAGS += -march=znver2
+else
+  CXXFLAGS += -march=native -mtune=native
+endif
+
+# Keep debug symbols so perf/VTune can symbolize. On Windows clang/lld we
+# need CodeView (PDB) so VTune can resolve function names.
+ifeq ($(OS),Windows_NT)
+  CXXFLAGS += -g -gcodeview
+  LDFLAGS_DEBUG := -Wl,/debug
+else
+  CXXFLAGS += -g
+  LDFLAGS_DEBUG :=
+endif
+
+LDFLAGS := -m64 -std=c++17 -fuse-ld=lld $(LDFLAGS_DEBUG)
+
+SRCS := \
+  src/test_lstm_fast.cpp \
+  src/random.cpp \
+  src/mixer/sigmoid.cpp
+
+OBJS := $(SRCS:src/%.cpp=$(OUT_DIR)/%.o)
+
+# Append .exe on Windows so the binary is runnable without renaming.
+ifeq ($(OS),Windows_NT)
+  EXE := .exe
+else
+  EXE :=
+endif
+
+TARGET := $(OUT_DIR)/lstm_bench$(EXE)
+
+.PHONY: all run perf clean vtune-hotspots vtune-uarch vtune-memory vtune-clean
+
+all: $(TARGET)
+
+$(OUT_DIR):
+	mkdir -p $(OUT_DIR) $(OUT_DIR)/mixer
+
+$(OUT_DIR)/%.o: src/%.cpp | $(OUT_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CXXFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJS)
+	$(CC) $(OBJS) -o $@ $(LDFLAGS)
+
+run: $(TARGET)
+	./$(TARGET)
+
+# perf is Linux-only; on other systems substitute your profiler.
+perf: $(TARGET)
+	perf stat -d ./$(TARGET)
+
+# ---------------------------------------------------------------------------
+# Intel VTune targets (Windows / Linux). Requires `vtune` on PATH.
+# Each target profiles one implementation in isolation (via --only) so the
+# reported hotspots / memory-access metrics aren't polluted by the other.
+# Results land in vtune_results/<name>.
+# ---------------------------------------------------------------------------
+
+VTUNE      ?= vtune
+VTUNE_DIR  := vtune_results
+VTUNE_ITERS?= 15000
+
+# Hotspots: per-function CPU time. Cheapest collection, good overview.
+vtune-hotspots: $(TARGET)
+	@mkdir -p $(VTUNE_DIR)
+	$(VTUNE) -collect hotspots -result-dir $(VTUNE_DIR)/hs_base -- ./$(TARGET) --iters $(VTUNE_ITERS) --only baseline
+	$(VTUNE) -collect hotspots -result-dir $(VTUNE_DIR)/hs_fast -- ./$(TARGET) --iters $(VTUNE_ITERS) --only fast
+	@echo "--- BASELINE summary ---"
+	$(VTUNE) -report summary -result-dir $(VTUNE_DIR)/hs_base
+	@echo "--- FAST summary ---"
+	$(VTUNE) -report summary -result-dir $(VTUNE_DIR)/hs_fast
+
+# Microarchitecture (IPC, frontend/backend stalls, branch mispredicts).
+vtune-uarch: $(TARGET)
+	@mkdir -p $(VTUNE_DIR)
+	$(VTUNE) -collect uarch-exploration -result-dir $(VTUNE_DIR)/ua_base -- ./$(TARGET) --iters $(VTUNE_ITERS) --only baseline
+	$(VTUNE) -collect uarch-exploration -result-dir $(VTUNE_DIR)/ua_fast -- ./$(TARGET) --iters $(VTUNE_ITERS) --only fast
+	@echo "--- BASELINE uarch ---"
+	$(VTUNE) -report summary -result-dir $(VTUNE_DIR)/ua_base
+	@echo "--- FAST uarch ---"
+	$(VTUNE) -report summary -result-dir $(VTUNE_DIR)/ua_fast
+
+# Memory-access: L1/L2/LLC miss rates, DRAM BW — the most relevant view for
+# bandwidth-bound workloads.
+vtune-memory: $(TARGET)
+	@mkdir -p $(VTUNE_DIR)
+	$(VTUNE) -collect memory-access -result-dir $(VTUNE_DIR)/mem_base -- ./$(TARGET) --iters $(VTUNE_ITERS) --only baseline
+	$(VTUNE) -collect memory-access -result-dir $(VTUNE_DIR)/mem_fast -- ./$(TARGET) --iters $(VTUNE_ITERS) --only fast
+	@echo "--- BASELINE memory ---"
+	$(VTUNE) -report summary -result-dir $(VTUNE_DIR)/mem_base
+	@echo "--- FAST memory ---"
+	$(VTUNE) -report summary -result-dir $(VTUNE_DIR)/mem_fast
+
+vtune-clean:
+	rm -rf $(VTUNE_DIR)
+
+clean:
+	rm -rf $(OUT_DIR)/test_lstm_fast.o $(OUT_DIR)/random.o \
+	       $(OUT_DIR)/mixer/sigmoid.o $(TARGET)
