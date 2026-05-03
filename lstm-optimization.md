@@ -323,4 +323,178 @@ one vector multiply folded with the load. The reassociation is safe for
 stability (none of the values saturate; `lr = 3e-5` so `1/lr ≈ 3.3e4` is
 well-scaled for float32 and the BPTT inputs stay in `[−1, 1]`).
 
+## May 2026 — candidate optimizations (not yet attempted)
+
+Calibrated against the post-v4 state and the noise-floor results in
+[vtune_cmix_input2_findings.md](vtune_cmix_input2_findings.md). Already-rejected
+shapes (v5 GEMV-collapse of the BPTT ring loop, v6 persistent scratch vectors)
+are excluded. All items below preserve compression output up to the same
+`-ffast-math` reassociation drift band (~10⁻³ per probability bin, ~10 bytes
+on `input2`) already accepted in v4.
+
+### A. Batched GEMM fold for `W_update` outer-product accumulation
+
+Hot site in [src/mixer/lstm_fast.hpp](src/mixer/lstm_fast.hpp), inside
+`LayerBackward`:
+
+```cpp
+L.W_update.middleCols(V, layer_input_dim_).noalias() +=
+    L.gate_error * layer_in.transpose();   // 3C × in_dim, every BPTT epoch
+L.W_update.col(input_symbol) += L.gate_error;
+```
+
+For the production config (`C=200`, `in_dim=601`, `H=128`) this writes
+~360 KB of float stores per epoch × per BPTT sweep — `H × 3C × in_dim`
+≈ 46 M float stores per sweep, ~360 K stores per bit. The `(3C × in_dim)`
+block does not fit in L2, so it is re-streamed every epoch. Believed to be
+the largest remaining single contributor to the post-v4 `pstore` time
+(34 s / 16.6 % of total CPU).
+
+Plan:
+
+1. Add `Eigen::MatrixXf gate_error_hist_` (size `3C × H`, ~300 KB at
+   `C=200, H=128`) to `Layer`.
+2. Inside `LayerBackward`, replace the outer-product line with a column
+   store: `L.gate_error_hist_.col(epoch) = L.gate_error;`.
+3. After the per-epoch BPTT loop, do **one GEMM per layer**:
+   ```cpp
+   L.W_update.middleCols(V, layer_input_dim_).noalias() +=
+       L.gate_error_hist_ * layer_inputs_[l].transpose();
+   ```
+   shape `(3C × H) · (H × in_dim) → (3C × in_dim)`. Roughly 46 M MACs per
+   sweep, exactly the same MAC count as the per-epoch rank-1 sum, but
+   dispatched to Eigen's blocked GEMM (level-3) kernel that keeps the
+   output tile L1-resident.
+4. Bucket the `+= L.gate_error.col(input_symbol)` scatter by symbol; sum
+   per-symbol columns of `gate_error_hist_` once at end-of-sweep.
+5. Same pattern for the LN parameter accumulators, both currently per-epoch:
+   ```cpp
+   L.beta_u  += L.gate_error;
+   L.gamma_u.array() += L.gate_error.array() * L.norm_hist.col(epoch).array();
+   ```
+   With `gate_error_hist_` available these become two end-of-sweep reductions:
+   ```cpp
+   L.beta_u.noalias()  += L.gate_error_hist_.rowwise().sum();
+   L.gamma_u.noalias() += (L.gate_error_hist_.array() * L.norm_hist.array())
+                              .rowwise().sum().matrix();
+   ```
+
+**Why this is not the v5 / v6 trap.** v5 collapsed a BPTT *reconstruction*
+loop into two GEMVs of size `(V × n) · n → V` with `n ≤ H ≤ 128`; that is a
+level-2 BLAS shape and Eigen's GEMV dispatch overhead dominated. Item A
+issues a level-3 GEMM of `(3C × H) · (H × in_dim)` ≈ `(600 × 128) · (128 × 601)`
+— well above Eigen's blocking threshold. v6 made no algorithmic change at all
+(just persistent scratch vectors); A removes ~`H − 1` redundant streams of
+the `W_update` block from main memory.
+
+**Risk.** +300 KB per layer of new working set. Production runs 1 layer →
++300 KB total, comparable to the 128 KB saved by v4. Adam reduction order
+on `W_update[:, V:V+in_dim]` changes from "rank-1 add per epoch in epoch
+order" to "GEMM accumulator order"; same drift class as v4.
+
+**Expected save:** 3–6 % full-predictor wall time. Above the documented
+2 % noise floor; should be confirmable on
+[benchmark_lstm.ps1](benchmark_lstm.ps1) before any full-predictor run.
+
+### B. Defer per-bit `output_layer_` rank-1 update
+
+Hot site in `Perceive`:
+
+```cpp
+output_layer_.noalias() -= hidden_ * errors.transpose();   // (C+1) × V per BIT
+```
+
+For `C+1=201, V=256` this is ~51 K float stores **per bit** = ~3 GB of
+stores total over `input2`. Plausibly the single largest contributor to
+post-v4 `pstore` time. This is the 200× larger sibling of the
+`output_history_` store removed in v4.
+
+Plan: keep `output_layer_` frozen between BPTT sweeps; the pending updates
+are already recorded in `(hidden_ring_, errors_ring_)`. Then `Predict`'s
+logits become
+
+$$\text{logits} = M_{\text{frozen}}^\top h
+   \;+\; \sum_{k \in \text{pending}} \varepsilon_k \cdot (h_k^\top h)$$
+
+with `n_pending ≤ H`. Cost per bit: `n_pending × ((C+1) + V)` ≈ 58 K float
+ops vs. the current ~51 K stores — same order, but mostly arithmetic
+rather than stores, and the per-k `h_k · h` dots can share the BPTT
+reconstruction's `errors_ring_.col(k).dot(...)` work cache. Once per BPTT
+sweep (every H bits), flush:
+
+```cpp
+output_layer_.noalias() -= hidden_ring_ * errors_ring_.transpose();
+```
+
+a single `(C+1) × H · H × V` GEMM — same level-3 shape argument as Item A.
+
+**Why this is the symmetric counterpart of v4.** v4 deferred a 256-float
+store; B defers the 51 K-float store ratio = ~200× larger. Linearly
+scaling v4's 1 % win gives an upper bound of ~10 % wall time. Realistic
+expectation 5–8 % after Predict overhead.
+
+**Risk.** Algorithm change in the per-bit hot path; high implementation
+risk. Must validate on [benchmark_lstm.ps1](benchmark_lstm.ps1) and on
+the LSTM bit-equivalence test in `src/test_lstm_fast.cpp` before touching
+the full predictor. Numerically identical in real arithmetic; in float
+introduces one new reassociation site (the `Σ_k ε_k · (h_k · h)` sum
+order in Predict).
+
+### C. Hand-fused sigmoid + tanh over the contiguous 3C buffer
+
+Forward path in `LayerForward` runs three separate Eigen array ops over
+disjoint thirds of the same 3C buffer:
+
+```cpp
+f_seg.array() = 1.0f / (1.0f + (-f_seg.array()).exp());   // C
+i_seg.array() = i_seg.array().tanh();                     // C
+o_seg.array() = 1.0f / (1.0f + (-o_seg.array()).exp());   // C
+```
+
+Three load+store sweeps over the buffer. A single hand-written loop over
+`j ∈ [0, 3C)` with a per-element gate selector (or three contiguous
+ranges in one function) lets the compiler keep `st` in vector registers
+and emit one fused store. Eigen does not expose "different elementwise
+functions on row stripes" as a primitive.
+
+**Expected save:** ~1–2 %, right at the documented noise floor. Confirm
+on the LSTM micro-bench before committing.
+
+### D. Row-major `output_layer_` storage (only valuable on top of B)
+
+Two hot ops on `output_layer_`:
+
+- `output_current_.noalias() = output_layer_.transpose() * hidden_;`
+  per bit. Column-major storage forces a strided access pattern across
+  rows for `M.T * v`; row-major makes it one contiguous-row read per
+  output element (Eigen's GEMV chooses the right kernel for either,
+  but row-major matches the access shape better).
+- The deferred-flush GEMM in B (`M -= H_ring × E_ring^T`) is row-major
+  natural.
+
+Stack on B; not worth doing alone.
+
+**Expected save when stacked on B:** ~1–3 %.
+
+### E. Multi-layer batched prev-layer GEMV — dormant
+
+Listed in the original "Future work" list. Production runs `num_layers_ == 1`,
+so there is no prev-layer block to batch. **Skip until 2-layer is re-enabled.**
+
+### Summary table
+
+| Pri | Item | Expected save | Risk    | Confirm on                |
+| --: | ---- | ------------: | :-----: | ------------------------- |
+| 1   | A — batched W_update / LN GEMM | 3–6 % | low    | benchmark_lstm.ps1 first |
+| 2   | B — defer output_layer_ rank-1 | 5–8 % | high   | benchmark_lstm.ps1 + bit-equiv test |
+| 3   | D — row-major output_layer_   | 1–3 % | low    | only after B lands       |
+| 4   | C — fused sigmoid+tanh         | 1–2 % | low    | benchmark_lstm.ps1 first |
+| —   | E — multi-layer GEMV fusion    | n/a   | —      | dormant code path        |
+
+Item A is the only candidate confidently above the 2 % noise floor on the
+full-predictor harness; everything else needs the LSTM micro-bench
+(min-of-N timing on
+[benchmark_lstm.ps1](benchmark_lstm.ps1)) before any VTune full-predictor
+run.
+
 
