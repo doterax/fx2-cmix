@@ -192,6 +192,15 @@ struct alignas(64) Inputs{
             n[ncount++]=p;
             AddPrediction(squash(p));
         }
+        // Like add(), but does not emit a per-model prediction sample.
+        // Used at call sites that previously did `add(p); prediction_index--;`
+        // — the AddPrediction()/squash() work in those sites was wasted
+        // (the prediction slot was immediately overwritten by the next add).
+        __attribute__((always_inline)) inline void add_no_pred(int p){
+            assert(ncount >= 0 && ncount <= S);
+            assert(p>-2048 && p<2048);
+            n[ncount++]=p;
+        }
     };
 template <const int S >
 struct BlockData {
@@ -769,7 +778,7 @@ struct SmallStationaryContextMap {
     cp = &Data[Context+B];
     int Prediction = (*cp)>>4;
     x.mxInputs1.add((stretch(Prediction)*Multiplier)/Divisor);
-    x.mxInputs1.add(((Prediction-2048)*Multiplier)/(Divisor*2));prediction_index--;
+    x.mxInputs1.add_no_pred(((Prediction-2048)*Multiplier)/(Divisor*2));
     bCount++; B+=B+1;
     if (bCount==bTotal)
       bCount=B=0;
@@ -1001,7 +1010,7 @@ inline int mix3(const int s, StateMap& sm) {
     if (skip2==1)x.mxInputs1.add(0);
     x.mxInputs1.add(0);
     x.mxInputs1.add(0);
-    x.mxInputs1.add(32*2);prediction_index--;
+    x.mxInputs1.add_no_pred(32*2);
     return 0;
   }else{
     sm.set(s);
@@ -1010,7 +1019,7 @@ inline int mix3(const int s, StateMap& sm) {
     if (skip2==1)x.mxInputs1.add(st2[p1]);
     x.mxInputs1.add(st8[s]);  // From state
     x.mxInputs1.add(st32[s]);
-    x.mxInputs1.add(0);prediction_index--;
+    x.mxInputs1.add_no_pred(0);
     return 1;
   }
 }
@@ -1021,7 +1030,7 @@ inline void mix4() {
     if (skip2==1)x.mxInputs1.add(0);
     x.mxInputs1.add(0);
     x.mxInputs1.add(0);
-    x.mxInputs1.add(32*2);prediction_index--;
+    x.mxInputs1.add_no_pred(32*2);
     x.mxInputs1.add(0);
 }
 // Update the model with bit y1, and predict next bit to mixer m.
@@ -1207,7 +1216,7 @@ inline int mix3(const int s, StateMap& sm) {
     if (skip2==1)x.mxInputs1.add(0);
     x.mxInputs1.add(0);
     x.mxInputs1.add(0);
-    x.mxInputs1.add(32*2);prediction_index--;
+    x.mxInputs1.add_no_pred(32*2);
     return 0;
   }else{
     sm.set(s);
@@ -1216,7 +1225,7 @@ inline int mix3(const int s, StateMap& sm) {
     if (skip2==1)x.mxInputs1.add(st2[p1]);
     x.mxInputs1.add(st8[s]);
     x.mxInputs1.add(st32[s]);
-    x.mxInputs1.add(0);prediction_index--;
+    x.mxInputs1.add_no_pred(0);
     return 1;
   }
 }
@@ -1226,7 +1235,7 @@ inline void mix4() {
     if (skip2==1)x.mxInputs1.add(0);
     x.mxInputs1.add(0);
     x.mxInputs1.add(0);
-    x.mxInputs1.add(32*2);prediction_index--;
+    x.mxInputs1.add_no_pred(32*2);
     x.mxInputs1.add(0);
 }
 // Update the model with bit y1, and predict next bit to mixer m.
@@ -1446,7 +1455,7 @@ inline int mix3(const int s, StateMap& sm) {
     if (skip2==1)x.mxInputs1.add(0);
     x.mxInputs1.add(0);
     x.mxInputs1.add(0);
-    x.mxInputs1.add(32*2);    prediction_index--;
+    x.mxInputs1.add_no_pred(32*2);
     return 0;
   }else{
     sm.set(s);
@@ -1455,7 +1464,7 @@ inline int mix3(const int s, StateMap& sm) {
     if (skip2==1)x.mxInputs1.add(st2[p1]);
     x.mxInputs1.add(st8[s]);
     x.mxInputs1.add(st32[s]); 
-    x.mxInputs1.add(0);    prediction_index--;
+    x.mxInputs1.add_no_pred(0);
     return 1;
   }
 }
@@ -1465,7 +1474,7 @@ inline void mix4() {
     if (skip2==1)x.mxInputs1.add(0);
     x.mxInputs1.add(0);
     x.mxInputs1.add(0);
-    x.mxInputs1.add(32*2); prediction_index--;
+    x.mxInputs1.add_no_pred(32*2);
     x.mxInputs1.add(0);
 }
 // Update the model with bit y1, and predict next bit to mixer m.
@@ -1596,10 +1605,8 @@ struct DirectStateMap {
     CxtState[cxt[index]]=next(CxtState[cxt[index]],y);       // update state
     cxt[index]=(cx)&mask;                                     // get new context
     sm[index].set(CxtState[cxt[index]]);    // predict from new context
-    x.mxInputs1.add(stretch(sm[index].pr)>>2);
-    prediction_index--;
-    x.mxInputs1.add(pre1[CxtState[cxt[index]]]);// sub
-    prediction_index--;
+    x.mxInputs1.add_no_pred(stretch(sm[index].pr)>>2);
+    x.mxInputs1.add_no_pred(pre1[CxtState[cxt[index]]]);// sub
     index++;
   }
   void mix() {
@@ -4672,7 +4679,7 @@ int modelPrediction(int c0,int bpos,int c4){
     // mixer 9
     mxA[9].cxt=(x.bpos<<8)*4+(fails&3)*256 + lstmex;
 
-    x.mxInputs1.add(stretch(lstmpr)); prediction_index--;
+    x.mxInputs1.add_no_pred(stretch(lstmpr));
     x.mxInputs2.add(mxA[0].p1());
     x.mxInputs2.add(mxA[1].p1());
     x.mxInputs2.add(mxA[2].p1());
@@ -4683,7 +4690,7 @@ int modelPrediction(int c0,int bpos,int c4){
     x.mxInputs2.add(mxA[7].p1());
     x.mxInputs2.add(mxA[8].p1());
     x.mxInputs2.add(mxA[9].p1());
-    x.mxInputs2.add(stretch(lstmpr)/2); prediction_index--;
+    x.mxInputs2.add_no_pred(stretch(lstmpr)/2);
     return squash((mxA[10].p1()*7+mxA[11].p1()+4)>>3);
 }
 
