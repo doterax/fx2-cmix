@@ -361,6 +361,9 @@ inline Eigen::VectorXf& LstmFast::Perceive(unsigned int input) {
       //                                    * (errors_ring.col(k) · v)
       Eigen::VectorXf slot_times_err = output_layer_ * errors_vec;
       // Add sum of rank-1 corrections from ring positions (epoch+1 .. H-1).
+      // (Attempted to collapse into two GEMVs in v5 but that regressed by ~4 %:
+      // H=128 is too small to amortize GEMV dispatch cost, and the rewrite
+      // needed a per-epoch `coeffs` temporary. See lstm-optimization.md.)
       for (int k = epoch + 1; k < H; ++k) {
         float coeff = errors_ring_.col(k).dot(errors_vec);
         slot_times_err.noalias() += coeff * hidden_ring_.col(k);

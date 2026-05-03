@@ -312,4 +312,98 @@ Next candidates from the LSTM "Future work" list:
 - **#4c — multi-layer fused GEMV**: with `num_layers_ == 1` on the
   production path this is a no-op. Keep on ice until we re-enable 2-layer.
 
+## Results — improvement #4d attempt (REJECTED): GEMV-ify BPTT ring reconstruction
+
+Targeting the two remaining LSTM inner-loop hotspots after v4:
+
+```
+Eigen::internal::inner_product_impl::run        9.65 s  (V-sized dot)
+dense_assignment_loop  (scalar * VectorXf axpy) 4.89 s
+```
+
+both come from the BPTT per-epoch reconstruction loop in `LstmFast::Perceive`:
+
+```cpp
+for (int k = epoch + 1; k < H; ++k) {
+  float coeff = errors_ring_.col(k).dot(errors_vec);        // 9.65 s total
+  slot_times_err.noalias() += coeff * hidden_ring_.col(k);  // 4.89 s total
+}
+```
+
+This is `sum_k h_k · (e_k · v)` over the H=128 ring. Mathematically it is
+`hidden_ring[:, e+1..H) · (errors_ring[:, e+1..H).T · v)` — two GEMVs that
+should be dispatched to Eigen's optimized kernel. v5 tried exactly that:
+
+```cpp
+Eigen::VectorXf coeffs =
+    errors_ring_.middleCols(epoch+1, n).transpose() * errors_vec;
+slot_times_err.noalias() += hidden_ring_.middleCols(epoch+1, n) * coeffs;
+```
+
+Full-predictor measurement (`no-preprocess input2`, 941 724 B):
+
+| Build              | Total CPU | Output size |
+| ------------------ | --------: | ----------: |
+| v4 (per-k loop)    |  202.57 s |   181 025 B |
+| v5 (two GEMVs)     | **210.87 s (+4.1 %)** | 181 026 B |
+
+Hotspot delta:
+
+| Symbol                  |   v4 |   v5 |    Δ |
+| ----------------------- | ---: | ---: | ---: |
+| `pstore`                | 34.03 | 35.41 | +1.4 |
+| `pmadd`                 | 28.97 | 32.76 | +3.8 |
+| `inner_product`         |  9.65 | 10.54 | +0.9 |
+| `dense_assignment_loop` |  4.89 |  5.10 | +0.2 |
+
+Every hot symbol regressed. Root cause analysis:
+
+1. **H=128 is too small to amortize GEMV dispatch.** Eigen's GEMV kernel
+   optimizes for asymptotic throughput on large matrices; for a
+   `256×(≤128)` or `201×(≤128)` product it is strictly slower than the
+   inlined per-k dot+axpy, which the C++ compiler fully unrolls and
+   SIMD-vectorizes across contiguous `errors_ring_.col(k)` storage.
+2. **Per-epoch allocation.** The rewrite materializes a `coeffs` VectorXf
+   every BPTT epoch (up to H×H = 16 384 allocations per sweep). The old
+   loop uses zero temporaries.
+3. `inner_product` *didn't* go to zero in v5 — it shows up in many other
+   call sites (softmax norm, state-error updates); the BPTT dots were not
+   a pure-isolated 9.65 s in the first place.
+
+Change reverted. Keep the per-k loop. Result dir:
+[vtune_results/cmix_input2_v5](vtune_results/cmix_input2_v5).
+
+Takeaway for future tuning of this file: any BPTT-shaped loop with
+`n ≤ H ≤ 128` is a bad GEMV candidate; prefer keeping the loop inlined
+and adding `noalias()` / contiguity hints.
+
+## Noise floor on this harness
+
+After v5's unexpected regression, re-ran the **unchanged v4 binary** to
+measure noise. Also tried a v6 experiment (persistent scratch vectors
+instead of per-bit/per-epoch stack allocations inside BPTT) — numerically
+identical output (181 025 B, same as v4), but also showed a regression vs
+v4's original number.
+
+| Run                            | Total CPU | Δ vs v4 orig | Output    |
+| ------------------------------ | --------: | -----------: | --------: |
+| v4 (original measurement)      |  202.57 s |     (baseline) | 181 025 B |
+| v5 (two-GEMV BPTT, rejected)   |  210.87 s |       +4.1 % | 181 026 B |
+| v6 (scratch vectors, reverted) |  212.50 s |       +4.9 % | 181 025 B |
+| **v4b (re-run of v4)**         | **206.71 s** |     **+2.0 %** | 181 025 B |
+
+Re-running *identical* code drifted by +4.1 s. The per-run noise floor on
+this machine/harness for the `input2 no-preprocess` workload is **≥ 2 %**.
+This means any prospective optimization with an expected win below ~2 %
+cannot be distinguished from noise on a single-shot VTune run — and the
+remaining "Potential future work" items for the LSTM (fused
+sigmoid+tanh, row-major `output_layer_`, multi-layer fused GEMV) all fall
+below that threshold.
+
+For further micro-optimization, switch to one of:
+- [benchmark_lstm.ps1](benchmark_lstm.ps1) tight-loop harness (no VTune
+  overhead, no disk I/O, min-of-N reporting).
+- A longer workload (`enwik7` instead of `input2`) so fixed-cost noise
+  amortizes to a smaller fraction.
+
 
